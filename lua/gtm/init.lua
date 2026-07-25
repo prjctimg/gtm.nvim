@@ -40,6 +40,8 @@ local ipc = {
 	_connected = false,
 	_base_pos = 0,
 	_base_time = 0,
+	_is_playing = false,
+	_duration = 0,
 	_buf = "",
 	_cmd_id = 0,
 	_pending_by_id = {},
@@ -179,6 +181,77 @@ function ipc._handle_json(line)
 	end
 end
 
+ipc.on_event("playback_started", function(ev)
+	ipc._base_pos = ev.time_pos or 0
+	ipc._base_time = hrtime()
+	ipc._is_playing = true
+	ipc._duration = ev.duration or 0
+	if ev.track then
+		ipc.last_status = {
+			status = "playing",
+			volume = ipc.last_status and ipc.last_status.volume or 80,
+			shuffle = ipc.last_status and ipc.last_status.shuffle or false,
+			["repeat"] = ipc.last_status and ipc.last_status["repeat"] or "off",
+			time_pos = ev.time_pos or 0,
+			duration = ev.duration or 0,
+			current_track = ev.track,
+		}
+	end
+end)
+
+ipc.on_event("playback_paused", function(ev)
+	ipc._base_pos = ev.time_pos or ipc._base_pos
+	ipc._base_time = hrtime()
+	ipc._is_playing = false
+	if ipc.last_status then
+		ipc.last_status.status = "paused"
+		ipc.last_status.time_pos = ev.time_pos or ipc._base_pos
+	end
+end)
+
+ipc.on_event("playback_stopped", function()
+	ipc._base_pos = 0
+	ipc._is_playing = false
+	if ipc.last_status then
+		ipc.last_status.status = "stopped"
+		ipc.last_status.time_pos = 0
+	end
+end)
+
+ipc.on_event("position_changed", function(ev)
+	ipc._base_pos = ev.time_pos or 0
+	ipc._base_time = hrtime()
+end)
+
+ipc.on_event("duration_changed", function(ev)
+	ipc._duration = ev.duration or 0
+	if ipc.last_status then
+		ipc.last_status.duration = ev.duration or 0
+	end
+end)
+
+ipc.on_event("volume_changed", function(ev)
+	if ipc.last_status then
+		ipc.last_status.volume = ev.volume
+	end
+end)
+
+ipc.on_event("shuffle_changed", function(ev)
+	if ipc.last_status then
+		ipc.last_status.shuffle = ev.enabled
+	end
+end)
+
+ipc.on_event("repeat_mode_changed", function(ev)
+	if ipc.last_status then
+		ipc.last_status["repeat"] = ev.mode
+	end
+end)
+
+ipc.on_event("heartbeat", function()
+	ipc._last_heartbeat = hrtime()
+end)
+
 function ipc.send_cmd(cmd, params, callback)
 	if not ipc._connected or not ipc._sock then
 		if callback then
@@ -210,7 +283,13 @@ function ipc.get_status(callback)
 	end
 	ipc.send_cmd("get_status", nil, function(resp)
 		if resp and resp.state then
-			callback(resp.state)
+			local state = resp.state
+			ipc.last_status = state
+			ipc._base_pos = state.time_pos or 0
+			ipc._base_time = hrtime()
+			ipc._is_playing = state.status == "playing"
+			ipc._duration = state.duration or 0
+			callback(state)
 		end
 	end)
 end
@@ -227,14 +306,11 @@ function ipc.disconnect()
 end
 
 function ipc.estimated_pos()
-	if not ipc.last_status then
-		return 0
-	end
-	local pos = ipc._base_pos
-	if ipc.last_status.status == "Playing" then
+	local pos = ipc._base_pos or 0
+	if ipc._is_playing then
 		pos = pos + (hrtime() - ipc._base_time) / 1e9
 	end
-	local dur = ipc.last_status.duration or 0
+	local dur = ipc._duration or 0
 	if dur > 0 then
 		pos = math.min(pos, dur)
 	end
@@ -566,9 +642,9 @@ local function status_icon(s)
 	if not s then
 		return " "
 	end
-	if s.status == "Playing" then
+	if s.status == "playing" then
 		return "▶"
-	elseif s.status == "Paused" then
+	elseif s.status == "paused" then
 		return "⏸"
 	else
 		return "⏹"
@@ -843,7 +919,7 @@ function float._render()
 		if s.shuffle then
 			table.insert(lines, "  shuffle on")
 		end
-		if s["repeat"] and s["repeat"] ~= "Off" then
+		if s["repeat"] and s["repeat"] ~= "off" then
 			table.insert(lines, "  repeat: " .. s["repeat"])
 		end
 		table.insert(lines, "")
@@ -1095,7 +1171,7 @@ end
 function library.refresh(opts)
 	ipc.library_get_tracks(nil, nil, function(result)
 		vim.schedule(function()
-			library.tracks = result.tracks or {}
+			library.tracks = result or {}
 			library.render(opts)
 		end)
 	end)
@@ -1192,7 +1268,7 @@ function library.filter()
 		if query then
 			ipc.library_get_tracks(query, nil, function(result)
 				vim.schedule(function()
-					library.tracks = result.tracks or {}
+					library.tracks = result or {}
 					library.render()
 				end)
 			end)
@@ -1419,9 +1495,9 @@ function commands.register(_opts)
 		elseif sub == "status" then
 			ipc.get_status(function(s)
 				local icon = "⏹"
-				if s.status == "Playing" then
+				if s.status == "playing" then
 					icon = "▶"
-				elseif s.status == "Paused" then
+				elseif s.status == "paused" then
 					icon = "⏸"
 				end
 				if s.current_track then
@@ -1451,7 +1527,7 @@ function commands.register(_opts)
 			end
 			ipc.library_scan(path, function(result)
 				vim.schedule(function()
-					vim.notify(string.format("[gtm] scanned: %d new tracks", #(result.tracks or {})))
+					vim.notify(string.format("[gtm] scanned: %d new tracks", #(result or {})))
 				end)
 			end)
 
