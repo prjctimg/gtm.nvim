@@ -40,8 +40,16 @@ local ipc = {
 	_connected = false,
 	_base_pos = 0,
 	_base_time = 0,
+	_is_playing = false,
+	_duration = 0,
 	_buf = "",
-	_pending = {},
+	_cmd_id = 0,
+	_pending_by_id = {},
+	_reconnect_delay = 500,
+	_reconnect_max = 10000,
+	_reconnect_timer = nil,
+	_reconnect_attempts = 0,
+	_last_heartbeat = 0,
 }
 
 local uv = vim.uv
@@ -50,32 +58,93 @@ local hrtime = uv.hrtime
 local function resolve_socket_path()
 	local runtime = os.getenv("XDG_RUNTIME_DIR")
 	if runtime then
-		local path = runtime .. "/gtmd.socket"
+		local path = runtime .. "/gtm/gtmd.sock"
 		if uv.fs_stat(path) then
 			return path
 		end
 	end
-	local tmpdir = os.getenv("TMPDIR") or "/tmp"
-	local path = tmpdir .. "/gtmd.socket"
-	if uv.fs_stat(path) then
-		return path
+	local user = os.getenv("USER") or "root"
+	local tmp_fallback = "/tmp/gtm-" .. user .. "/gtm/gtmd.sock"
+	if uv.fs_stat(tmp_fallback) then
+		return tmp_fallback
+	end
+	local tmpdir = os.getenv("TMPDIR")
+	if tmpdir then
+		local path = tmpdir .. "/gtm/gtmd.sock"
+		if uv.fs_stat(path) then
+			return path
+		end
 	end
 	local home = os.getenv("HOME") or "/tmp"
-	return home .. "/.gtm/gtmd.socket"
+	return home .. "/.gtm/gtm/gtmd.sock"
+end
+
+local function resolve_pulse_socket_path()
+	local base = resolve_socket_path():gsub("gtmd%.sock$", "gtmd.pulse")
+	return base
 end
 
 function ipc.connect(path)
 	ipc._sock_path = path or resolve_socket_path()
+	if not uv.fs_stat(ipc._sock_path) then
+		ipc._try_start_daemon()
+		return
+	end
+	ipc._do_connect()
+end
+
+function ipc._try_start_daemon()
+	local handle = uv.spawn("gtmd", {
+		args = {},
+		detached = true,
+		stdio = { nil, nil, nil },
+	}, function() end)
+	if not handle then
+		vim.notify("[gtm] daemon not found, cannot auto-start", vim.log.levels.WARN)
+		return
+	end
+	handle:close()
+	local attempts = 0
+	local poll = uv.new_timer()
+	poll:start(100, 100, function()
+		attempts = attempts + 1
+		if uv.fs_stat(ipc._sock_path) or attempts > 50 then
+			poll:stop()
+			poll:close()
+			if uv.fs_stat(ipc._sock_path) then
+				ipc._do_connect()
+			else
+				vim.notify("[gtm] daemon did not start in time", vim.log.levels.WARN)
+			end
+		end
+	end)
+end
+
+function ipc._do_connect()
 	ipc._sock = uv.new_pipe(false)
 	ipc._sock:connect(ipc._sock_path, function(err)
 		if err then
 			ipc._connected = false
-			vim.notify("[gtm] failed to connect: " .. tostring(err), vim.log.levels.WARN)
+			ipc._schedule_reconnect()
 			return
 		end
 		ipc._connected = true
 		ipc._read_loop()
+		ipc._send_handshake()
 	end)
+end
+
+function ipc._send_handshake()
+	ipc._cmd_id = 0
+	local req = { id = 0, cmd = "handshake", version = 1, client = "gtm.nvim" }
+	local payload = vim.json.encode(req) .. "\n"
+	ipc._pending_by_id[0] = function(resp)
+		if not resp.ok then
+			vim.notify("[gtm] daemon rejected handshake: " .. (resp.error or "version mismatch"), vim.log.levels.ERROR)
+			ipc.disconnect()
+		end
+	end
+	ipc._sock:write(payload)
 end
 
 function ipc._read_loop()
@@ -83,6 +152,7 @@ function ipc._read_loop()
 	ipc._sock:read_start(function(err, data)
 		if err or not data then
 			ipc._connected = false
+			ipc._schedule_reconnect()
 			return
 		end
 		ipc._buf = ipc._buf .. data
@@ -118,28 +188,112 @@ function ipc._read_loop()
 	end)
 end
 
+local _event_handlers = {}
+
+function ipc.on_event(event_name, handler)
+	if not _event_handlers[event_name] then
+		_event_handlers[event_name] = {}
+	end
+	table.insert(_event_handlers[event_name], handler)
+end
+
 function ipc._handle_json(line)
-	local ok, resp = pcall(vim.json.decode, line)
-	if not ok or type(resp) ~= "table" then
+	local ok, data = pcall(vim.json.decode, line)
+	if not ok or type(data) ~= "table" then
 		return
 	end
 
-	if resp.status and type(resp.status) == "table" and resp.status.state then
-		local state = resp.status.state
-		ipc.last_status = state
-		ipc._base_pos = state.time_pos or 0
-		ipc._base_time = hrtime()
+	if data.event then
+		local handlers = _event_handlers[data.event]
+		if handlers then
+			for _, handler in ipairs(handlers) do
+				handler(data)
+			end
+		end
+		return
 	end
 
-	if #ipc._pending > 0 then
-		local cb = table.remove(ipc._pending, 1)
+	if data.id and ipc._pending_by_id[data.id] then
+		local cb = ipc._pending_by_id[data.id]
+		ipc._pending_by_id[data.id] = nil
 		vim.schedule(function()
-			cb(resp)
+			cb(data)
 		end)
 	end
 end
 
-function ipc.send(req, callback)
+ipc.on_event("playback_started", function(ev)
+	ipc._base_pos = ev.time_pos or 0
+	ipc._base_time = hrtime()
+	ipc._is_playing = true
+	ipc._duration = ev.duration or 0
+	if ev.track then
+		ipc.last_status = {
+			status = "playing",
+			volume = ipc.last_status and ipc.last_status.volume or 80,
+			shuffle = ipc.last_status and ipc.last_status.shuffle or false,
+			["repeat"] = ipc.last_status and ipc.last_status["repeat"] or "off",
+			time_pos = ev.time_pos or 0,
+			duration = ev.duration or 0,
+			current_track = ev.track,
+		}
+	end
+end)
+
+ipc.on_event("playback_paused", function(ev)
+	ipc._base_pos = ev.time_pos or ipc._base_pos
+	ipc._base_time = hrtime()
+	ipc._is_playing = false
+	if ipc.last_status then
+		ipc.last_status.status = "paused"
+		ipc.last_status.time_pos = ev.time_pos or ipc._base_pos
+	end
+end)
+
+ipc.on_event("playback_stopped", function()
+	ipc._base_pos = 0
+	ipc._is_playing = false
+	if ipc.last_status then
+		ipc.last_status.status = "stopped"
+		ipc.last_status.time_pos = 0
+	end
+end)
+
+ipc.on_event("position_changed", function(ev)
+	ipc._base_pos = ev.time_pos or 0
+	ipc._base_time = hrtime()
+end)
+
+ipc.on_event("duration_changed", function(ev)
+	ipc._duration = ev.duration or 0
+	if ipc.last_status then
+		ipc.last_status.duration = ev.duration or 0
+	end
+end)
+
+ipc.on_event("volume_changed", function(ev)
+	if ipc.last_status then
+		ipc.last_status.volume = ev.volume
+	end
+end)
+
+ipc.on_event("shuffle_changed", function(ev)
+	if ipc.last_status then
+		ipc.last_status.shuffle = ev.enabled
+	end
+end)
+
+ipc.on_event("repeat_mode_changed", function(ev)
+	if ipc.last_status then
+		ipc.last_status["repeat"] = ev.mode
+	end
+end)
+
+ipc.on_event("heartbeat", function()
+	ipc._last_heartbeat = hrtime()
+end)
+
+function ipc.send_cmd(cmd, params, callback)
 	if not ipc._connected or not ipc._sock then
 		if callback then
 			vim.schedule(function()
@@ -148,31 +302,46 @@ function ipc.send(req, callback)
 		end
 		return
 	end
-	local payload
-	if type(req) == "string" then
-		payload = req .. "\n"
-	else
-		payload = vim.json.encode(req) .. "\n"
+	ipc._cmd_id = ipc._cmd_id + 1
+	local req = { id = ipc._cmd_id, cmd = cmd }
+	if params then
+		for k, v in pairs(params) do
+			req[k] = v
+		end
 	end
+	local payload = vim.json.encode(req) .. "\n"
 	if callback then
-		table.insert(ipc._pending, callback)
+		ipc._pending_by_id[ipc._cmd_id] = callback
 	end
 	ipc._sock:write(payload)
+	return ipc._cmd_id
 end
 
 function ipc.get_status(callback)
 	if not callback then
-		ipc.send("get_status")
+		ipc.send_cmd("get_status")
 		return
 	end
-	ipc.send("get_status", function(resp)
-		if resp and resp.status and type(resp.status) == "table" and resp.status.state then
-			callback(resp.status.state)
+	ipc.send_cmd("get_status", nil, function(resp)
+		if resp and resp.state then
+			local state = resp.state
+			ipc.last_status = state
+			ipc._base_pos = state.time_pos or 0
+			ipc._base_time = hrtime()
+			ipc._is_playing = state.status == "playing"
+			ipc._duration = state.duration or 0
+			callback(state)
 		end
 	end)
 end
 
 function ipc.disconnect()
+	if ipc._reconnect_timer then
+		ipc._reconnect_timer:stop()
+		ipc._reconnect_timer:close()
+		ipc._reconnect_timer = nil
+	end
+	ipc._reconnect_attempts = 0
 	if ipc._sock then
 		ipc._sock:read_stop()
 		ipc._sock:close()
@@ -180,18 +349,52 @@ function ipc.disconnect()
 	end
 	ipc._connected = false
 	ipc.last_status = nil
-	ipc._pending = {}
+	ipc._pending_by_id = {}
+end
+
+function ipc._schedule_reconnect()
+	if ipc._reconnect_timer or not ipc._sock_path then
+		return
+	end
+	ipc._reconnect_timer = uv.new_timer()
+	ipc._reconnect_timer:start(ipc._reconnect_delay, 0, function()
+		if ipc._reconnect_timer then
+			ipc._reconnect_timer:stop()
+			ipc._reconnect_timer:close()
+			ipc._reconnect_timer = nil
+		end
+		ipc._do_reconnect()
+	end)
+end
+
+function ipc._do_reconnect()
+	ipc._reconnect_attempts = ipc._reconnect_attempts + 1
+	ipc._sock = uv.new_pipe(false)
+	ipc._sock:connect(ipc._sock_path, function(err)
+		if err then
+			ipc._connected = false
+			ipc._reconnect_delay = math.min(ipc._reconnect_delay * 2, ipc._reconnect_max)
+			if ipc._reconnect_attempts < 30 then
+				ipc._schedule_reconnect()
+			else
+				vim.notify("[gtm] reconnection failed after 30 attempts", vim.log.levels.ERROR)
+			end
+			return
+		end
+		ipc._connected = true
+		ipc._reconnect_delay = 500
+		ipc._reconnect_attempts = 0
+		ipc._read_loop()
+		ipc._send_handshake()
+	end)
 end
 
 function ipc.estimated_pos()
-	if not ipc.last_status then
-		return 0
-	end
-	local pos = ipc._base_pos
-	if ipc.last_status.status == "Playing" then
+	local pos = ipc._base_pos or 0
+	if ipc._is_playing then
 		pos = pos + (hrtime() - ipc._base_time) / 1e9
 	end
-	local dur = ipc.last_status.duration or 0
+	local dur = ipc._duration or 0
 	if dur > 0 then
 		pos = math.min(pos, dur)
 	end
@@ -203,13 +406,11 @@ end
 -- ============================================================================
 
 function ipc.library_get_tracks(filter, sort, callback)
-	ipc.send({
-		library = {
-			action = {
-				get_tracks = {
-					filter = filter or nil,
-					sort = sort or nil,
-				},
+	ipc.send_cmd("library", {
+		action = {
+			get_tracks = {
+				filter = filter or nil,
+				sort = sort or nil,
 			},
 		},
 	}, function(resp)
@@ -220,10 +421,8 @@ function ipc.library_get_tracks(filter, sort, callback)
 end
 
 function ipc.library_get_playlists(callback)
-	ipc.send({
-		library = {
-			action = "get_playlists",
-		},
+	ipc.send_cmd("library", {
+		action = "get_playlists",
 	}, function(resp)
 		if callback and resp and resp.playlists then
 			callback(resp.playlists)
@@ -232,11 +431,9 @@ function ipc.library_get_playlists(callback)
 end
 
 function ipc.library_scan(path, callback)
-	ipc.send({
-		library = {
-			action = {
-				scan = { path = path },
-			},
+	ipc.send_cmd("library", {
+		action = {
+			scan = { path = path },
 		},
 	}, function(resp)
 		if callback and resp and resp.tracks then
@@ -246,11 +443,9 @@ function ipc.library_scan(path, callback)
 end
 
 function ipc.library_create_playlist(name, callback)
-	ipc.send({
-		library = {
-			action = {
-				create_playlist = { name = name },
-			},
+	ipc.send_cmd("library", {
+		action = {
+			create_playlist = { name = name },
 		},
 	}, function(resp)
 		if callback and resp and resp.playlists then
@@ -260,11 +455,9 @@ function ipc.library_create_playlist(name, callback)
 end
 
 function ipc.library_delete_playlist(id, callback)
-	ipc.send({
-		library = {
-			action = {
-				delete_playlist = { id = id },
-			},
+	ipc.send_cmd("library", {
+		action = {
+			delete_playlist = { id = id },
 		},
 	}, function(resp)
 		if callback then
@@ -274,13 +467,11 @@ function ipc.library_delete_playlist(id, callback)
 end
 
 function ipc.library_add_to_playlist(playlist_id, track_ids, callback)
-	ipc.send({
-		library = {
-			action = {
-				add_to_playlist = {
-					playlist_id = playlist_id,
-					track_ids = track_ids,
-				},
+	ipc.send_cmd("library", {
+		action = {
+			add_to_playlist = {
+				playlist_id = playlist_id,
+				track_ids = track_ids,
 			},
 		},
 	}, function(resp)
@@ -291,13 +482,11 @@ function ipc.library_add_to_playlist(playlist_id, track_ids, callback)
 end
 
 function ipc.library_remove_from_playlist(playlist_id, track_id, callback)
-	ipc.send({
-		library = {
-			action = {
-				remove_from_playlist = {
-					playlist_id = playlist_id,
-					track_id = track_id,
-				},
+	ipc.send_cmd("library", {
+		action = {
+			remove_from_playlist = {
+				playlist_id = playlist_id,
+				track_id = track_id,
 			},
 		},
 	}, function(resp)
@@ -308,11 +497,9 @@ function ipc.library_remove_from_playlist(playlist_id, track_id, callback)
 end
 
 function ipc.library_remove_track(id, callback)
-	ipc.send({
-		library = {
-			action = {
-				remove_track = { id = id },
-			},
+	ipc.send_cmd("library", {
+		action = {
+			remove_track = { id = id },
 		},
 	}, function(resp)
 		if callback then
@@ -322,11 +509,9 @@ function ipc.library_remove_track(id, callback)
 end
 
 function ipc.library_get_recent(count, callback)
-	ipc.send({
-		library = {
-			action = {
-				get_recent = { count = count or 50 },
-			},
+	ipc.send_cmd("library", {
+		action = {
+			get_recent = { count = count or 50 },
 		},
 	}, function(resp)
 		if callback and resp and resp.tracks then
@@ -340,7 +525,7 @@ end
 -- ============================================================================
 
 function ipc.get_favourites(callback)
-	ipc.send({ get_favourites = nil }, function(resp)
+	ipc.send_cmd("get_favourites", nil, function(resp)
 		if callback and resp and resp.tracks then
 			callback(resp.tracks)
 		end
@@ -348,7 +533,7 @@ function ipc.get_favourites(callback)
 end
 
 function ipc.add_favourite(track_id, callback)
-	ipc.send({ add_favourite = { track_id = track_id } }, function(resp)
+	ipc.send_cmd("add_favourite", { track_id = track_id }, function(resp)
 		if callback then
 			callback(resp)
 		end
@@ -356,7 +541,7 @@ function ipc.add_favourite(track_id, callback)
 end
 
 function ipc.remove_favourite(track_id, callback)
-	ipc.send({ remove_favourite = { track_id = track_id } }, function(resp)
+	ipc.send_cmd("remove_favourite", { track_id = track_id }, function(resp)
 		if callback then
 			callback(resp)
 		end
@@ -368,7 +553,7 @@ end
 -- ============================================================================
 
 function ipc.set_eq_preset(preset, callback)
-	ipc.send({ set_eq_preset = { preset = preset } }, function(resp)
+	ipc.send_cmd("set_eq_preset", { preset = preset }, function(resp)
 		if callback then
 			callback(resp)
 		end
@@ -376,7 +561,7 @@ function ipc.set_eq_preset(preset, callback)
 end
 
 function ipc.set_eq_enabled(enabled, callback)
-	ipc.send({ set_eq_enabled = { enabled = enabled } }, function(resp)
+	ipc.send_cmd("set_eq_enabled", { enabled = enabled }, function(resp)
 		if callback then
 			callback(resp)
 		end
@@ -388,11 +573,9 @@ end
 -- ============================================================================
 
 function ipc.yt_search(query, filter, callback)
-	ipc.send({
-		yt_search = {
-			query = query,
-			filter = filter or nil,
-		},
+	ipc.send_cmd("yt_search", {
+		query = query,
+		filter = filter or nil,
 	}, function(resp)
 		if callback then
 			callback(resp)
@@ -401,7 +584,7 @@ function ipc.yt_search(query, filter, callback)
 end
 
 function ipc.yt_search_poll(callback)
-	ipc.send("yt_search_poll", function(resp)
+	ipc.send_cmd("yt_search_poll", nil, function(resp)
 		if callback then
 			callback(resp)
 		end
@@ -409,7 +592,7 @@ function ipc.yt_search_poll(callback)
 end
 
 function ipc.yt_search_cancel(callback)
-	ipc.send("yt_search_cancel", function(resp)
+	ipc.send_cmd("yt_search_cancel", nil, function(resp)
 		if callback then
 			callback(resp)
 		end
@@ -417,9 +600,7 @@ function ipc.yt_search_cancel(callback)
 end
 
 function ipc.yt_resolve_stream(url, callback)
-	ipc.send({
-		yt_resolve_stream = { url = url },
-	}, function(resp)
+	ipc.send_cmd("yt_resolve_stream", { url = url }, function(resp)
 		if callback and resp and resp.stream_info then
 			callback(resp.stream_info)
 		end
@@ -431,9 +612,7 @@ end
 -- ============================================================================
 
 function ipc.queue_list(callback)
-	ipc.send({
-		queue = { action = "list" },
-	}, function(resp)
+	ipc.send_cmd("queue", { action = "list" }, function(resp)
 		if callback and resp and resp.queue_state then
 			callback(resp.queue_state)
 		end
@@ -441,9 +620,7 @@ function ipc.queue_list(callback)
 end
 
 function ipc.queue_clear(callback)
-	ipc.send({
-		queue = { action = "clear" },
-	}, function(resp)
+	ipc.send_cmd("queue", { action = "clear" }, function(resp)
 		if callback then
 			callback(resp)
 		end
@@ -451,11 +628,9 @@ function ipc.queue_clear(callback)
 end
 
 function ipc.queue_add(path, position, callback)
-	ipc.send({
-		queue = {
-			action = {
-				add = { path = path, position = position or nil },
-			},
+	ipc.send_cmd("queue", {
+		action = {
+			add = { path = path, position = position or nil },
 		},
 	}, function(resp)
 		if callback then
@@ -465,11 +640,9 @@ function ipc.queue_add(path, position, callback)
 end
 
 function ipc.queue_remove(index, callback)
-	ipc.send({
-		queue = {
-			action = {
-				remove = { index = index },
-			},
+	ipc.send_cmd("queue", {
+		action = {
+			remove = { index = index },
 		},
 	}, function(resp)
 		if callback then
@@ -479,11 +652,9 @@ function ipc.queue_remove(index, callback)
 end
 
 function ipc.queue_move(from, to, callback)
-	ipc.send({
-		queue = {
-			action = {
-				move = { from = from, to = to },
-			},
+	ipc.send_cmd("queue", {
+		action = {
+			move = { from = from, to = to },
 		},
 	}, function(resp)
 		if callback then
@@ -497,7 +668,7 @@ end
 -- ============================================================================
 
 function ipc.seek(position_secs, callback)
-	ipc.send({ seek = { position_secs = position_secs } }, function(resp)
+	ipc.send_cmd("seek", { position_secs = position_secs }, function(resp)
 		if callback then
 			callback(resp)
 		end
@@ -505,7 +676,7 @@ function ipc.seek(position_secs, callback)
 end
 
 function ipc.toggle_shuffle(callback)
-	ipc.send("toggle_shuffle", function(resp)
+	ipc.send_cmd("toggle_shuffle", nil, function(resp)
 		if callback then
 			callback(resp)
 		end
@@ -513,7 +684,7 @@ function ipc.toggle_shuffle(callback)
 end
 
 function ipc.cycle_repeat(mode, callback)
-	ipc.send({ cycle_repeat = { mode = mode or "off" } }, function(resp)
+	ipc.send_cmd("cycle_repeat", { mode = mode or "off" }, function(resp)
 		if callback then
 			callback(resp)
 		end
@@ -521,7 +692,7 @@ function ipc.cycle_repeat(mode, callback)
 end
 
 function ipc.toggle_mute(callback)
-	ipc.send("toggle_mute", function(resp)
+	ipc.send_cmd("toggle_mute", nil, function(resp)
 		if callback then
 			callback(resp)
 		end
@@ -555,9 +726,9 @@ local function status_icon(s)
 	if not s then
 		return " "
 	end
-	if s.status == "Playing" then
+	if s.status == "playing" then
 		return "▶"
-	elseif s.status == "Paused" then
+	elseif s.status == "paused" then
 		return "⏸"
 	else
 		return "⏹"
@@ -832,7 +1003,7 @@ function float._render()
 		if s.shuffle then
 			table.insert(lines, "  shuffle on")
 		end
-		if s["repeat"] and s["repeat"] ~= "Off" then
+		if s["repeat"] and s["repeat"] ~= "off" then
 			table.insert(lines, "  repeat: " .. s["repeat"])
 		end
 		table.insert(lines, "")
@@ -947,7 +1118,7 @@ function statusline.detailed(s)
 	end
 	table.insert(parts, string.format("[%s/%s]", pos, dur))
 	table.insert(parts, string.format("vol:%d%%", vol))
-	if s["repeat"] and s["repeat"] ~= "Off" then
+	if s["repeat"] and s["repeat"] ~= "off" then
 		table.insert(parts, "[R]")
 	end
 	if s.shuffle then
@@ -969,7 +1140,7 @@ function statusline.start(_opts)
 	statusline.stop()
 	statusline._timer = uv.new_timer()
 	statusline._timer:start(0, _opts.statusline_interval or 1000, function()
-		ipc.send("get_status")
+		ipc.send_cmd("get_status")
 	end)
 end
 
@@ -1084,7 +1255,7 @@ end
 function library.refresh(opts)
 	ipc.library_get_tracks(nil, nil, function(result)
 		vim.schedule(function()
-			library.tracks = result.tracks or {}
+			library.tracks = result or {}
 			library.render(opts)
 		end)
 	end)
@@ -1129,7 +1300,7 @@ function library.select()
 	local idx = row - 2
 	local track = library.tracks[idx]
 	if track and track.path then
-		ipc.send({ play = { path = track.path, start_pos = 0.0 } })
+		ipc.send_cmd("play", { path = track.path, start_pos = 0.0 })
 	end
 end
 
@@ -1181,7 +1352,7 @@ function library.filter()
 		if query then
 			ipc.library_get_tracks(query, nil, function(result)
 				vim.schedule(function()
-					library.tracks = result.tracks or {}
+					library.tracks = result or {}
 					library.render()
 				end)
 			end)
@@ -1408,9 +1579,9 @@ function commands.register(_opts)
 		elseif sub == "status" then
 			ipc.get_status(function(s)
 				local icon = "⏹"
-				if s.status == "Playing" then
+				if s.status == "playing" then
 					icon = "▶"
-				elseif s.status == "Paused" then
+				elseif s.status == "paused" then
 					icon = "⏸"
 				end
 				if s.current_track then
@@ -1440,7 +1611,7 @@ function commands.register(_opts)
 			end
 			ipc.library_scan(path, function(result)
 				vim.schedule(function()
-					vim.notify(string.format("[gtm] scanned: %d new tracks", #(result.tracks or {})))
+					vim.notify(string.format("[gtm] scanned: %d new tracks", #(result or {})))
 				end)
 			end)
 
@@ -1554,32 +1725,32 @@ end
 -- ============================================================================
 
 function I.play_pause()
-	ipc.send("play_pause")
+	ipc.send_cmd("play_pause")
 end
 
 function I.next()
-	ipc.send("next")
+	ipc.send_cmd("next")
 end
 
 function I.prev()
-	ipc.send("prev")
+	ipc.send_cmd("prev")
 end
 
 function I.stop()
-	ipc.send("stop")
+	ipc.send_cmd("stop")
 end
 
 function I.volume_up()
 	if ipc.last_status then
 		local vol = math.min(100, (ipc.last_status.volume or 80) + 5)
-		ipc.send({ set_volume = { volume = vol } })
+		ipc.send_cmd("set_volume", { volume = vol })
 	end
 end
 
 function I.volume_down()
 	if ipc.last_status then
 		local vol = math.max(0, (ipc.last_status.volume or 80) - 5)
-		ipc.send({ set_volume = { volume = vol } })
+		ipc.send_cmd("set_volume", { volume = vol })
 	end
 end
 
