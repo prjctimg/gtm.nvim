@@ -88,7 +88,21 @@ function ipc.connect(path)
 		end
 		ipc._connected = true
 		ipc._read_loop()
+		ipc._send_handshake()
 	end)
+end
+
+function ipc._send_handshake()
+	ipc._cmd_id = 0
+	local req = { id = 0, cmd = "handshake", version = 1, client = "gtm.nvim" }
+	local payload = vim.json.encode(req) .. "\n"
+	ipc._pending_by_id[0] = function(resp)
+		if not resp.ok then
+			vim.notify("[gtm] daemon rejected handshake: " .. (resp.error or "version mismatch"), vim.log.levels.ERROR)
+			ipc.disconnect()
+		end
+	end
+	ipc._sock:write(payload)
 end
 
 function ipc._read_loop()
