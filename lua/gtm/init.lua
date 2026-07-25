@@ -1118,7 +1118,7 @@ function statusline.detailed(s)
 	end
 	table.insert(parts, string.format("[%s/%s]", pos, dur))
 	table.insert(parts, string.format("vol:%d%%", vol))
-	if s["repeat"] and s["repeat"] ~= "Off" then
+	if s["repeat"] and s["repeat"] ~= "off" then
 		table.insert(parts, "[R]")
 	end
 	if s.shuffle then
