@@ -50,18 +50,30 @@ local hrtime = uv.hrtime
 local function resolve_socket_path()
 	local runtime = os.getenv("XDG_RUNTIME_DIR")
 	if runtime then
-		local path = runtime .. "/gtmd.socket"
+		local path = runtime .. "/gtm/gtmd.sock"
 		if uv.fs_stat(path) then
 			return path
 		end
 	end
-	local tmpdir = os.getenv("TMPDIR") or "/tmp"
-	local path = tmpdir .. "/gtmd.socket"
-	if uv.fs_stat(path) then
-		return path
+	local user = os.getenv("USER") or "root"
+	local tmp_fallback = "/tmp/gtm-" .. user .. "/gtm/gtmd.sock"
+	if uv.fs_stat(tmp_fallback) then
+		return tmp_fallback
+	end
+	local tmpdir = os.getenv("TMPDIR")
+	if tmpdir then
+		local path = tmpdir .. "/gtm/gtmd.sock"
+		if uv.fs_stat(path) then
+			return path
+		end
 	end
 	local home = os.getenv("HOME") or "/tmp"
-	return home .. "/.gtm/gtmd.socket"
+	return home .. "/.gtm/gtm/gtmd.sock"
+end
+
+local function resolve_pulse_socket_path()
+	local base = resolve_socket_path():gsub("gtmd%.sock$", "gtmd.pulse")
+	return base
 end
 
 function ipc.connect(path)
