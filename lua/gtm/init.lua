@@ -86,11 +86,46 @@ end
 
 function ipc.connect(path)
 	ipc._sock_path = path or resolve_socket_path()
+	if not uv.fs_stat(ipc._sock_path) then
+		ipc._try_start_daemon()
+		return
+	end
+	ipc._do_connect()
+end
+
+function ipc._try_start_daemon()
+	local handle = uv.spawn("gtmd", {
+		args = {},
+		detached = true,
+		stdio = { nil, nil, nil },
+	}, function() end)
+	if not handle then
+		vim.notify("[gtm] daemon not found, cannot auto-start", vim.log.levels.WARN)
+		return
+	end
+	handle:close()
+	local attempts = 0
+	local poll = uv.new_timer()
+	poll:start(100, 100, function()
+		attempts = attempts + 1
+		if uv.fs_stat(ipc._sock_path) or attempts > 50 then
+			poll:stop()
+			poll:close()
+			if uv.fs_stat(ipc._sock_path) then
+				ipc._do_connect()
+			else
+				vim.notify("[gtm] daemon did not start in time", vim.log.levels.WARN)
+			end
+		end
+	end)
+end
+
+function ipc._do_connect()
 	ipc._sock = uv.new_pipe(false)
 	ipc._sock:connect(ipc._sock_path, function(err)
 		if err then
 			ipc._connected = false
-			vim.notify("[gtm] failed to connect: " .. tostring(err), vim.log.levels.WARN)
+			ipc._schedule_reconnect()
 			return
 		end
 		ipc._connected = true
