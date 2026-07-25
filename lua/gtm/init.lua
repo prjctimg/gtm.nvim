@@ -45,6 +45,11 @@ local ipc = {
 	_buf = "",
 	_cmd_id = 0,
 	_pending_by_id = {},
+	_reconnect_delay = 500,
+	_reconnect_max = 10000,
+	_reconnect_timer = nil,
+	_reconnect_attempts = 0,
+	_last_heartbeat = 0,
 }
 
 local uv = vim.uv
@@ -112,6 +117,7 @@ function ipc._read_loop()
 	ipc._sock:read_start(function(err, data)
 		if err or not data then
 			ipc._connected = false
+			ipc._schedule_reconnect()
 			return
 		end
 		ipc._buf = ipc._buf .. data
@@ -295,6 +301,12 @@ function ipc.get_status(callback)
 end
 
 function ipc.disconnect()
+	if ipc._reconnect_timer then
+		ipc._reconnect_timer:stop()
+		ipc._reconnect_timer:close()
+		ipc._reconnect_timer = nil
+	end
+	ipc._reconnect_attempts = 0
 	if ipc._sock then
 		ipc._sock:read_stop()
 		ipc._sock:close()
@@ -303,6 +315,43 @@ function ipc.disconnect()
 	ipc._connected = false
 	ipc.last_status = nil
 	ipc._pending_by_id = {}
+end
+
+function ipc._schedule_reconnect()
+	if ipc._reconnect_timer or not ipc._sock_path then
+		return
+	end
+	ipc._reconnect_timer = uv.new_timer()
+	ipc._reconnect_timer:start(ipc._reconnect_delay, 0, function()
+		if ipc._reconnect_timer then
+			ipc._reconnect_timer:stop()
+			ipc._reconnect_timer:close()
+			ipc._reconnect_timer = nil
+		end
+		ipc._do_reconnect()
+	end)
+end
+
+function ipc._do_reconnect()
+	ipc._reconnect_attempts = ipc._reconnect_attempts + 1
+	ipc._sock = uv.new_pipe(false)
+	ipc._sock:connect(ipc._sock_path, function(err)
+		if err then
+			ipc._connected = false
+			ipc._reconnect_delay = math.min(ipc._reconnect_delay * 2, ipc._reconnect_max)
+			if ipc._reconnect_attempts < 30 then
+				ipc._schedule_reconnect()
+			else
+				vim.notify("[gtm] reconnection failed after 30 attempts", vim.log.levels.ERROR)
+			end
+			return
+		end
+		ipc._connected = true
+		ipc._reconnect_delay = 500
+		ipc._reconnect_attempts = 0
+		ipc._read_loop()
+		ipc._send_handshake()
+	end)
 end
 
 function ipc.estimated_pos()
