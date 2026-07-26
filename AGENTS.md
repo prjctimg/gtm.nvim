@@ -20,13 +20,13 @@ No formal build or test suite. Plugin loads directly into Neovim.
 ## Loop Engineering
 
 This repo uses loop engineering patterns. See:
-- `STATE.md` — current loop memory
-- `LOOP.md` — active loops and cadence
-- `loop-budget.md` — token caps
-- `loop-constraints.md` — binding agent rules
-- `loop-run-log.md` — run history
-- `gate.yaml` — path denylist + auto-merge allowlist
-- `skills/` — triage and verifier skills
+- `.opencode/STATE.md` — current loop memory
+- `.opencode/LOOP.md` — active loops and cadence
+- `.opencode/loop-budget.md` — token caps
+- `.opencode/loop-constraints.md` — binding agent rules
+- `.opencode/loop-run-log.md` — run history
+- `.opencode/gate.yaml` — path denylist + auto-merge allowlist
+- `.opencode/skills/` — triage and verifier skills
 
-Start a loop: `opencode run "Run loop-triage. Update STATE.md."`
+Start a loop: `opencode run "Run loop-triage. Update .opencode/STATE.md."`
 Verify changes: `opencode run "Verify diff in worktree" --agent verifier`
