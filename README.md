@@ -1,39 +1,30 @@
 # gtm.nvim
 
-Neovim plugin for the [GTM](https://github.com/skchr/gtm-rs) terminal music player.
+[![Version](https://img.shields.io/github/v/release/prjctimg/gtm.nvim)](https://github.com/prjctimg/gtm.nvim/releases)
+[![License: GPLv3](https://img.shields.io/badge/license-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Neovim](https://img.shields.io/badge/neovim-0.9+-green.svg)](https://neovim.io)
 
-Provides floating window launcher, statusline integration, library browser,
-equalizer control, YouTube search/download, and global keymaps
-for controlling the GTM daemon directly from Neovim via Unix socket IPC.
+Neovim plugin for the GTM terminal music player. Controls playback, library, and equalizer directly from Neovim.
 
 ## Requirements
 
 - Neovim 0.9+
-- [GTM](https://github.com/skchr/gtm-rs) daemon (`gtmd`) running
-- `yt-dlp` (optional, for YouTube features)
-- No external dependencies for core features (uses `vim.uv` / libuv for socket I/O)
-
-### Cover Art (optional)
-
-- [3rd/image.nvim](https://github.com/3rd/image.nvim) for image rendering
-- A supported backend: Kitty (recommended), ueberzugpp, or Sixel
-- [ImageMagick](https://imagemagick.org/) for image processing
-- `ffmpeg` for embedded thumbnail extraction (fallback)
+- [GTM daemon](https://github.com/prjctimg/gtm-rs) (`gtmd`) running
+- `yt-dlp` (optional, for YouTube search/download)
 
 ## Install
 
-### lazy.nvim
-
 ```lua
+-- lazy.nvim
 {
   "prjctimg/gtm.nvim",
   opts = {
-    statusline_format = "compact",  -- "compact" or "detailed"
+    statusline_format = "compact",
     float = {
       width = 0.8,
       height = 0.8,
       border = "rounded",
-      cover_art = true,             -- requires image.nvim
+      cover_art = false,
     },
     keymaps = {
       play_pause = "<leader>gp",
@@ -48,99 +39,31 @@ for controlling the GTM daemon directly from Neovim via Unix socket IPC.
 }
 ```
 
-### Manual
-
-```lua
-require("gtm").setup({
-  statusline_format = "compact",
-  float = { width = 0.8, height = 0.8, border = "rounded" },
-})
-```
-
-### Cover Art
-
-Cover art is rendered in the floating pane using [image.nvim](https://github.com/3rd/image.nvim).
-This is an **optional** feature. To enable it:
-
-```lua
-{
-  "prjctimg/gtm.nvim",
-  dependencies = {
-    { "3rd/image.nvim", opts = { processor = "magick_cli" } },
-  },
-  opts = {
-    float = {
-      cover_art = true,
-    },
-  },
-}
-```
-
-Cover art is resolved in this order:
-1. `cover_art` field from GTM daemon IPC response
-2. Common filenames next to the audio file (`cover.jpg`, `folder.jpg`, etc.)
-3. Embedded thumbnail extracted via `ffmpeg` (cached in `~/.cache/gtm/covers/`)
-
-To disable cover art: `float = { cover_art = false }`.
-
 ## Commands
 
-### Playback
-
 | Command | Description |
 |---------|-------------|
-| `:Gtm float` / `:Gtm toggle` | Toggle GTM floating window |
+| `:Gtm float` | Toggle floating window |
 | `:Gtm play` | Toggle play/pause |
-| `:Gtm next` | Next track |
-| `:Gtm prev` | Previous track |
+| `:Gtm next` / `:Gtm prev` | Next / previous track |
 | `:Gtm stop` | Stop playback |
-| `:Gtm volup` | Volume up 5% |
-| `:Gtm voldown` | Volume down 5% |
+| `:Gtm volup` / `:Gtm voldown` | Volume ±5% |
 | `:Gtm shuffle` | Toggle shuffle |
-| `:Gtm repeat {mode}` | Set repeat: off, one, all |
-| `:Gtm mute` | Toggle mute |
-| `:Gtm seek {secs}` | Seek to position in seconds |
-| `:Gtm status` | Show current track info |
-| `:Gtm disconnect` | Disconnect from daemon |
-
-### Library
-
-| Command | Description |
-|---------|-------------|
-| `:Gtm library` | Open track list with vim motions |
+| `:Gtm repeat {off\|one\|all}` | Set repeat mode |
+| `:Gtm seek {secs}` | Seek to position |
+| `:Gtm status` | Show current track |
+| `:Gtm library` | Open library browser |
 | `:Gtm playlists` | Open playlist list |
-| `:Gtm scan {path}` | Scan directory and add to library |
+| `:Gtm scan {path}` | Scan directory into library |
+| `:Gtm eq {preset}` | Set equalizer preset |
+| `:Gtm yt {query}` | Search YouTube |
 
-Library buffer keymaps: `j`/`k` navigate, `gg`/`G` jump, `<CR>` play,
-`d` delete, `a` add to queue, `F` toggle favourite, `t` playlists,
-`/` filter, `q`/`<Esc>` close.
-
-### Equalizer
-
-| Command | Description |
-|---------|-------------|
-| `:Gtm eq on` | Enable EQ |
-| `:Gtm eq off` | Disable EQ |
-| `:Gtm eq {preset}` | Set preset: flat, pop, rock, jazz, classical, bass, vocal, electronic, hip_hop, latin, acoustic, podcast, dance, headphones, speaker |
-
-### YouTube
-
-| Command | Description |
-|---------|-------------|
-| `:Gtm yt` | Search YouTube (prompts for query) |
-| `:Gtm yt {query}` | Search YouTube for query |
-| `:Gtm yt download` | Download track (prompts for URL) |
-| `:Gtm yt download {url}` | Download from URL or search query |
-
-Results appear in a floating picker. Press `<CR>` to download.
-Audio is saved as MP3 to `~/.local/share/gtm/audio/` and the library
-is automatically rescanned.
+See `:help gtm.nvim` for full keymaps and library buffer bindings.
 
 ## Statusline
 
-### lualine.nvim
-
 ```lua
+-- lualine.nvim
 require("lualine").setup({
   sections = {
     lualine_x = {
@@ -150,49 +73,30 @@ require("lualine").setup({
 })
 ```
 
-### Manual
-
-```lua
--- In your statusline config:
-vim.o.statusline = "%{v:lua.require'gtm'.statusline()}"
-```
-
-### Formats
-
-**Compact** (default):
-```
-Artist - Title ▶ vol:80% ━━━━━━━━━━━━━━━━━━━━
-```
-
-**Detailed**:
-```
-▶ Artist / Title (Album) [01:23/04:56] vol:80% 🔁 🔀
-```
+**Compact:** `Artist - Title ▶ vol:80% ━━━━━━━━━━━━━━━━━━━━`
+**Detailed:** `▶ Artist / Title (Album) [01:23/04:56] vol:80% 🔁 🔀`
 
 ## Architecture
 
+The plugin connects to the daemon's Unix socket via `vim.uv`, exchanging JSON line-delimited requests/responses. MessagePack binary event frames are detected and skipped. No CLI wrapper needed.
+
 ```
-Neovim                          GTM Daemon
-──────                          ──────────
-gtm (single init.lua) ── Unix socket ──► gtmd
+Neovim (init.lua) ── Unix socket ──► gtmd
   │  JSON line requests              │
   │  ◄── JSON responses              │
-  │  ◄── bincode events (skipped)    │
+  │  ◄── MessagePack events (skipped)│
   │                                  │
-  ├── IPC (connect, send, read)      │
-  ├── Float (termopen)               │
-  ├── Statusline (poll + interpolate)│
-  ├── Library (track/playlist UI)    │
-  ├── Equalizer (preset control)     │
-  ├── YouTube (search + download)    │
-  └── Commands (keymaps)             │
+  ├── IPC / Float / Statusline       │
+  ├── Library / Equalizer / YouTube  │
+  └── Commands & keymaps             │
 ```
 
-The plugin connects directly to the daemon's Unix socket using libuv
-(`vim.uv`), sending JSON line-delimited requests and parsing responses.
-Bincode event frames on the same socket are detected and skipped.
-No CLI wrapper needed.
+## Specification
+
+- [gtm.spec](https://github.com/prjctimg/gtm.spec) — full specification
+- [Protocol](https://github.com/prjctimg/gtm.spec/blob/main/protocol.md) — IPC protocol reference
+- [Configuration](https://github.com/prjctimg/gtm.spec/blob/main/man/gtm-config.1.md) — daemon configuration
 
 ## License
 
-GPLv3 — same as GTM.
+[GPLv3](https://www.gnu.org/licenses/gpl-3.0) — same as GTM.
