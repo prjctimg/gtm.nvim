@@ -1,4 +1,4 @@
--- Copyright (c) 2025 - present
+-- Copyright (c) 2026 - present
 -- Author: prjctimg <prjctimg@outlook.com>
 -- gtm.nvim: Neovim wrapper for the GTM daemon via Unix socket IPC
 --
@@ -1272,7 +1272,7 @@ function library.render(opts)
 		table.insert(lines, library_fmt_track(t, i))
 	end
 	if #library.tracks == 0 then
-		table.insert(lines, "  (empty — use :Gtm scan <path> to add music)")
+		table.insert(lines, "  (empty: use :Gtm scan <path> to add music)")
 	end
 	vim.api.nvim_buf_set_lines(library.buf_id, 0, -1, false, lines)
 	vim.bo[library.buf_id].modifiable = false

@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Copyright (c) 2025 - present
+Copyright (c) 2026 - present
 Author: prjctimg <prjctimg@outlook.com>
 
 This is free software released under the GPL-3.0 license.

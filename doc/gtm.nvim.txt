@@ -94,7 +94,7 @@ database. Use |:Gtm scan| to add new directories.
 
 Gains are capped at +/-5 dB. Q value: 1.414 (1/3-octave bandwidth).
 
-Note: The EQ DSP is not yet implemented in the daemon — only the
+Note: The EQ DSP is not yet implemented in the daemon: only the
 preset switching and IPC plumbing are functional.
 
 ==============================================================================

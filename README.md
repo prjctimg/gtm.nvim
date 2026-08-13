@@ -9,7 +9,7 @@ Neovim plugin for the GTM terminal music player. Controls playback, library, and
 ## Requirements
 
 - Neovim 0.9+
-- [GTM daemon](https://github.com/prjctimg/gtm-rs) (`gtmd`) running
+- [GTM daemon](https://github.com/prjctimg/gtm.rs) (`gtmd`) running
 - `yt-dlp` (optional, for YouTube search/download)
 
 ## Install
@@ -93,10 +93,10 @@ Neovim (init.lua) ── Unix socket ──► gtmd
 
 ## Specification
 
-- [gtm.spec](https://github.com/prjctimg/gtm.spec) — full specification
-- [Protocol](https://github.com/prjctimg/gtm.spec/blob/main/protocol.md) — IPC protocol reference
-- [Configuration](https://github.com/prjctimg/gtm.spec/blob/main/man/gtm-config.1.md) — daemon configuration
+- [gtm.spec](https://github.com/prjctimg/gtm.spec): full specification
+- [IPC Protocol](https://github.com/prjctimg/gtm.spec/wiki/IPC-Protocol): wire format reference
+- [Configuration](https://github.com/prjctimg/gtm.spec/wiki/Configuration): daemon configuration
 
 ## License
 
-[GPLv3](https://www.gnu.org/licenses/gpl-3.0) — same as GTM.
+[GPLv3](https://www.gnu.org/licenses/gpl-3.0).

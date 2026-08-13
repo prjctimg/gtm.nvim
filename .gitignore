@@ -1,0 +1,5 @@
+.entire/
+.opencode/
+*.swp
+*~
+.DS_Store
