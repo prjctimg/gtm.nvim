@@ -10,6 +10,48 @@ Author: prjctimg <prjctimg@outlook.com>
 
 This is free software released under the GPL-3.0 license.
 
+## [Unreleased]
+
+### Added
+
+- Cover art rendering in the float via `3rd/image.nvim` (optional
+  dependency); artwork is fetched daemon-first with `get_cover_art`,
+  decoded, and cached under `stdpath("cache")/gtm/cover`.
+- Reactive theming: when `opts.theme.reactive` is set, a 3-color palette
+  is derived from the current album art (ffmpeg/ImageMagick 24x24 RGB
+  quantization) and re-tints the float's global highlights — background
+  wash at `opts.theme.intensity`, contrast-preserving text/border hues.
+  The tint survives pauses, restores exactly on stop / track change /
+  colorscheme swap / close, and is inspectable via `:Gtm theme status`
+  and clearable via `:Gtm theme reset`.
+- `theme.extra_groups` option to tint extra highlight names alongside the
+  float groups.
+
+### Changed
+
+- Events now arrive over a dedicated `gtmd.pulse` socket (MessagePack
+  frames with 4-byte big-endian framing) subscribed at connect time;
+  the old `get_status` polling loop is gone. A `get_status_lite` resync
+  every `resync_interval` (30 s) keeps state fresh.
+- The float was rewritten as a native Neovim float with a left-panel cover
+  window and per-line `Gtm*` highlight records; text is indented by the
+  cover size when artwork is rendered.
+- `get_cover_art` responses are flattened to `data` on the command
+  envelope; library/queue payloads use `tracks`, `playlists`,
+  `queue`+`cursor`, `results`, `info` response keys.
+- Status wire values (`status`, `repeat`) are normalized to lowercase in
+  the plugin (`Paused` → `paused`, `One` → `one`).
+- `cycle_repeat` maps `off|one|all` to the daemon's PascalCase `RepeatMode`
+  (`Off`/`One`/`All`).
+- The null-safe binary writes in the cover cache use Lua `io` (binary
+  strings can't round-trip through VimL `writefile`).
+
+### Removed
+
+- The `handshake` command: connect now just subscribes to `gtmd.pulse` and
+  takes a `get_status` snapshot (daemon protocol break, no fallback).
+- `statusline_interval` option (replaced by `resync_interval`).
+
 ## [0.1.0] - 2025-01-01
 
 ### Added

@@ -11,6 +11,7 @@ Neovim plugin for the GTM terminal music player. Controls playback, library, and
 - Neovim 0.9+
 - [GTM daemon](https://github.com/prjctimg/gtm-rs) (`gtmd`) running
 - `yt-dlp` (optional, for YouTube search/download)
+- [3rd/image.nvim](https://github.com/3rd/image.nvim) (optional, for cover art rendering in the float)
 
 ## Install
 
@@ -18,13 +19,22 @@ Neovim plugin for the GTM terminal music player. Controls playback, library, and
 -- lazy.nvim
 {
   "prjctimg/gtm.nvim",
+  dependencies = {
+    -- optional: artwork in the float window
+    { "3rd/image.nvim", optional = true },
+  },
   opts = {
     statusline_format = "compact",
     float = {
       width = 0.8,
       height = 0.8,
       border = "rounded",
-      cover_art = false,
+      cover_art = true, -- requires 3rd/image.nvim
+    },
+    -- tint the float's highlights (and its background) from the album art
+    theme = {
+      reactive = true, -- default false
+      intensity = 0.2, -- 0..0.5 background wash strength
     },
     keymaps = {
       play_pause = "<leader>gp",
@@ -52,6 +62,7 @@ Neovim plugin for the GTM terminal music player. Controls playback, library, and
 | `:Gtm repeat {off\|one\|all}` | Set repeat mode |
 | `:Gtm seek {secs}` | Seek to position |
 | `:Gtm status` | Show current track |
+| `:Gtm theme {status\|reset}` | Show reactive palette hexes / clear the tint |
 | `:Gtm library` | Open library browser |
 | `:Gtm playlists` | Open playlist list |
 | `:Gtm scan {path}` | Scan directory into library |
@@ -59,6 +70,26 @@ Neovim plugin for the GTM terminal music player. Controls playback, library, and
 | `:Gtm yt {query}` | Search YouTube |
 
 See `:help gtm.nvim` for full keymaps and library buffer bindings.
+
+## Cover art
+
+Cover art is resolved daemon-first: the plugin asks `gtmd` via
+`get_cover_art`, decodes the base64 payload, and caches it under
+`stdpath("cache")/gtm/cover` keyed by track hash — a flat directory that is
+never scanned. When artwork can't be rendered (no `image.nvim`), the float
+falls back to a `♪` placeholder.
+
+## Reactive theming
+
+When `opts.theme.reactive = true`, the plugin derives a 3-color palette from
+the current album art (downscaled to 24×24 raw RGB via ffmpeg or
+ImageMagick) and re-tints the float's highlight groups — background gets an
+ambient wash of the dominant color at `opts.theme.intensity`, while
+text/border accents take the palette hues using a contrast-preserving
+adjust. The tint stays applied while playback is paused and is restored
+exactly (per-group `nvim_get_hl {link=true}` snapshots) on stop, track
+change, colorscheme swap, or plugin close. `:Gtm theme status` prints the
+active palette hexes; `:Gtm theme reset` clears the tint.
 
 ## Statusline
 
@@ -78,17 +109,25 @@ require("lualine").setup({
 
 ## Architecture
 
-The plugin connects to the daemon's Unix socket via `vim.uv`, exchanging JSON line-delimited requests/responses. MessagePack binary event frames are detected and skipped. No CLI wrapper needed.
+The plugin talks to the daemon over two Unix sockets using `vim.uv`:
+
+- a command socket (`gtmd.sock`) for JSON line-delimited request/response
+  pairs, and
+- a pulse socket (`gtmd.pulse`) for MessagePack event frames — the plugin
+  subscribes at startup, so no polling is needed. A lightweight
+  `get_status_lite` resync every 30 s keeps drift out.
 
 ```
 Neovim (init.lua) ── Unix socket ──► gtmd
-  │  JSON line requests              │
-  │  ◄── JSON responses              │
-  │  ◄── MessagePack events (skipped)│
-  │                                  │
-  ├── IPC / Float / Statusline       │
-  ├── Library / Equalizer / YouTube  │
-  └── Commands & keymaps             │
+  │  JSON requests (gtmd.sock)      │
+  │  ◄── JSON responses             │
+  │  MessagePack events (gtmd.pulse)│
+  │  ◄── heartbeat / state frames   │
+  │                                 │
+  ├── IPC / Float / Statusline      │
+  ├── Cover art + reactive theme    │
+  ├── Library / Equalizer / YouTube │
+  └── Commands & keymaps            │
 ```
 
 ## Specification

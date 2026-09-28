@@ -6,15 +6,28 @@
 
 local I = {}
 
+local events = require("gtm.events")
+local coverart = require("gtm.cover")
+local theme = require("gtm.theme")
+
+-- Forward declaration: `float` is built mid-file (after the event handlers that
+-- reference it are registered), so event closures must capture this local.
+local float
+
 local default_opts = {
 	socket_path = nil,
 	statusline_format = "compact",
-	statusline_interval = 1000,
+	resync_interval = 30000,
 	float = {
 		width = 0.8,
 		height = 0.8,
 		border = "rounded",
 		cover_art = true,
+	},
+	theme = {
+		reactive = false,
+		intensity = 0.2,
+		extra_groups = {},
 	},
 	keymaps = {
 		play_pause = "<leader>gp",
@@ -50,6 +63,10 @@ local ipc = {
 	_reconnect_timer = nil,
 	_reconnect_attempts = 0,
 	_last_heartbeat = 0,
+	_track_key = nil,
+	_track_hooks = {},
+	_prime_done = false,
+	_on_connected = nil,
 }
 
 local uv = vim.uv
@@ -80,8 +97,10 @@ local function resolve_socket_path()
 end
 
 local function resolve_pulse_socket_path()
-	local base = resolve_socket_path():gsub("gtmd%.sock$", "gtmd.pulse")
-	return base
+	-- The pulse socket is the command socket's sibling (gtmd.pulse). Prefer
+	-- the configured socket_path so custom/isolated daemons work too.
+	local base = ipc._sock_path or resolve_socket_path()
+	return base:gsub("gtmd%.sock$", "gtmd.pulse")
 end
 
 function ipc.connect(path)
@@ -130,21 +149,27 @@ function ipc._do_connect()
 		end
 		ipc._connected = true
 		ipc._read_loop()
-		ipc._send_handshake()
+		ipc._prime()
 	end)
 end
 
-function ipc._send_handshake()
+-- On (re)connect: claim the pulse event stream and pull a full status
+-- snapshot so the UI is correct even when nothing has been played yet (e.g.
+-- paused-on-launch radio). The handshake command was removed from the
+-- daemon protocol in favour of request/response envelopes only.
+function ipc._prime()
 	ipc._cmd_id = 0
-	local req = { id = 0, cmd = "handshake", version = 1, client = "gtm.nvim" }
-	local payload = vim.json.encode(req) .. "\n"
-	ipc._pending_by_id[0] = function(resp)
-		if not resp.ok then
-			vim.notify("[gtm] daemon rejected handshake: " .. (resp.error or "version mismatch"), vim.log.levels.ERROR)
-			ipc.disconnect()
+	ipc._pending_by_id = {}
+	ipc._prime_done = true
+	events.connect(resolve_pulse_socket_path())
+	ipc.send_cmd("get_status", nil, function(resp)
+		if resp and resp.state then
+			ipc._set_status(resp.state)
 		end
-	end
-	ipc._sock:write(payload)
+		if ipc._on_connected then
+			ipc._on_connected()
+		end
+	end)
 end
 
 function ipc._read_loop()
@@ -188,28 +213,15 @@ function ipc._read_loop()
 	end)
 end
 
-local _event_handlers = {}
-
 function ipc.on_event(event_name, handler)
-	if not _event_handlers[event_name] then
-		_event_handlers[event_name] = {}
-	end
-	table.insert(_event_handlers[event_name], handler)
+	-- Events arrive exclusively on the gtmd.pulse stream; `ipc.on_event` is
+	-- kept as the registration API so callers don't depend on the transport.
+	events.on(event_name, handler)
 end
 
 function ipc._handle_json(line)
 	local ok, data = pcall(vim.json.decode, line)
 	if not ok or type(data) ~= "table" then
-		return
-	end
-
-	if data.event then
-		local handlers = _event_handlers[data.event]
-		if handlers then
-			for _, handler in ipairs(handlers) do
-				handler(data)
-			end
-		end
 		return
 	end
 
@@ -237,6 +249,7 @@ ipc.on_event("playback_started", function(ev)
 			duration = ev.duration or 0,
 			current_track = ev.track,
 		}
+		ipc._set_track(ev.track)
 	end
 end)
 
@@ -257,11 +270,11 @@ ipc.on_event("playback_stopped", function()
 		ipc.last_status.status = "stopped"
 		ipc.last_status.time_pos = 0
 	end
+	ipc._clear_track()
 end)
 
-ipc.on_event("position_changed", function(ev)
-	ipc._base_pos = ev.time_pos or 0
-	ipc._base_time = hrtime()
+ipc.on_event("track_ended", function()
+	ipc._clear_track()
 end)
 
 ipc.on_event("duration_changed", function(ev)
@@ -284,8 +297,28 @@ ipc.on_event("shuffle_changed", function(ev)
 end)
 
 ipc.on_event("repeat_mode_changed", function(ev)
+	-- RepeatMode serializes PascalCase on the wire ("One"/"All"/"Off");
+	-- keep the sane lowercase form everywhere in the plugin.
 	if ipc.last_status then
-		ipc.last_status["repeat"] = ev.mode
+		ipc.last_status["repeat"] = (ev.mode or ""):lower()
+	end
+end)
+
+ipc.on_event("radio_title_changed", function(ev)
+	if ipc.last_status and ev.title then
+		local track = ipc.last_status.current_track
+		if track then
+			track.title = ev.title
+		end
+	end
+	if float.is_open() then
+		float._render()
+	end
+end)
+
+ipc.on_event("metadata_changed", function()
+	if float.is_open() then
+		float._render()
 	end
 end)
 
@@ -303,18 +336,78 @@ function ipc.send_cmd(cmd, params, callback)
 		return
 	end
 	ipc._cmd_id = ipc._cmd_id + 1
-	local req = { id = ipc._cmd_id, cmd = cmd }
-	if params then
-		for k, v in pairs(params) do
-			req[k] = v
-		end
-	end
+	-- Wire envelope: every request carries `params` (may be empty).
+	local req = { id = ipc._cmd_id, cmd = cmd, params = params or {} }
 	local payload = vim.json.encode(req) .. "\n"
 	if callback then
 		ipc._pending_by_id[ipc._cmd_id] = callback
 	end
 	ipc._sock:write(payload)
 	return ipc._cmd_id
+end
+
+function ipc._set_status(state)
+	if not state then
+		return
+	end
+	local s = vim.deepcopy(state)
+	-- PlaybackStatus / RepeatMode arrive PascalCase on the wire; normalize
+	-- to the lowercase forms the rest of the plugin expects.
+	if s.status then
+		s.status = s.status:lower()
+	end
+	if s["repeat"] then
+		s["repeat"] = s["repeat"]:lower()
+	end
+	ipc.last_status = s
+	ipc._base_pos = s.time_pos or 0
+	ipc._base_time = hrtime()
+	ipc._is_playing = s.status == "playing"
+	ipc._duration = s.duration or 0
+	if s.current_track then
+		ipc._set_track(s.current_track)
+	end
+end
+
+-- Track-change fan-out: dedupes by cover key (hash or path digest) so the
+-- cover fetch and theme pass run once per distinct track, and notifies every
+-- registered hook (float refresh, reactive theme).
+function ipc._set_track(track)
+	if not track then
+		return
+	end
+	local key = coverart.key(track)
+	if not key or key == ipc._track_key then
+		return
+	end
+	ipc._track_key = key
+	for _, hook in ipairs(ipc._track_hooks) do
+		hook(track)
+	end
+end
+
+function ipc._clear_track()
+	ipc._track_key = nil
+	for _, hook in ipairs(ipc._track_hooks) do
+		hook(nil)
+	end
+end
+
+-- Daemon-first cover fetch: `get_cover_art` returns the artwork as a base64
+-- blob on the command socket (the daemon owns cache + remote lookups).
+function ipc.get_cover_art(track, callback)
+	if not track then
+		callback(nil)
+		return
+	end
+	ipc.send_cmd("get_cover_art", {
+		track_id = track.id or 0,
+		path = track.path or nil,
+	}, function(resp)
+		if callback then
+			callback(resp and resp.data or nil)
+		end
+	end)
 end
 
 function ipc.get_status(callback)
@@ -324,13 +417,8 @@ function ipc.get_status(callback)
 	end
 	ipc.send_cmd("get_status", nil, function(resp)
 		if resp and resp.state then
-			local state = resp.state
-			ipc.last_status = state
-			ipc._base_pos = state.time_pos or 0
-			ipc._base_time = hrtime()
-			ipc._is_playing = state.status == "playing"
-			ipc._duration = state.duration or 0
-			callback(state)
+			ipc._set_status(resp.state)
+			callback(ipc.last_status)
 		end
 	end)
 end
@@ -350,6 +438,9 @@ function ipc.disconnect()
 	ipc._connected = false
 	ipc.last_status = nil
 	ipc._pending_by_id = {}
+	ipc._track_key = nil
+	ipc._prime_done = false
+	events.disconnect()
 end
 
 function ipc._schedule_reconnect()
@@ -385,7 +476,7 @@ function ipc._do_reconnect()
 		ipc._reconnect_delay = 500
 		ipc._reconnect_attempts = 0
 		ipc._read_loop()
-		ipc._send_handshake()
+		ipc._prime()
 	end)
 end
 
@@ -407,12 +498,9 @@ end
 
 function ipc.library_get_tracks(filter, sort, callback)
 	ipc.send_cmd("library", {
-		action = {
-			get_tracks = {
-				filter = filter or nil,
-				sort = sort or nil,
-			},
-		},
+		action = "get_tracks",
+		filter = filter or nil,
+		sort = sort or nil,
 	}, function(resp)
 		if callback and resp and resp.tracks then
 			callback(resp.tracks)
@@ -432,9 +520,8 @@ end
 
 function ipc.library_scan(path, callback)
 	ipc.send_cmd("library", {
-		action = {
-			scan = { path = path },
-		},
+		action = "scan",
+		path = path,
 	}, function(resp)
 		if callback and resp and resp.tracks then
 			callback(resp.tracks)
@@ -444,9 +531,8 @@ end
 
 function ipc.library_create_playlist(name, callback)
 	ipc.send_cmd("library", {
-		action = {
-			create_playlist = { name = name },
-		},
+		action = "create_playlist",
+		name = name,
 	}, function(resp)
 		if callback and resp and resp.playlists then
 			callback(resp.playlists)
@@ -456,9 +542,8 @@ end
 
 function ipc.library_delete_playlist(id, callback)
 	ipc.send_cmd("library", {
-		action = {
-			delete_playlist = { id = id },
-		},
+		action = "delete_playlist",
+		id = id,
 	}, function(resp)
 		if callback then
 			callback(resp)
@@ -468,12 +553,9 @@ end
 
 function ipc.library_add_to_playlist(playlist_id, track_ids, callback)
 	ipc.send_cmd("library", {
-		action = {
-			add_to_playlist = {
-				playlist_id = playlist_id,
-				track_ids = track_ids,
-			},
-		},
+		action = "add_to_playlist",
+		playlist_id = playlist_id,
+		track_ids = track_ids,
 	}, function(resp)
 		if callback then
 			callback(resp)
@@ -483,12 +565,9 @@ end
 
 function ipc.library_remove_from_playlist(playlist_id, track_id, callback)
 	ipc.send_cmd("library", {
-		action = {
-			remove_from_playlist = {
-				playlist_id = playlist_id,
-				track_id = track_id,
-			},
-		},
+		action = "remove_from_playlist",
+		playlist_id = playlist_id,
+		track_id = track_id,
 	}, function(resp)
 		if callback then
 			callback(resp)
@@ -498,9 +577,8 @@ end
 
 function ipc.library_remove_track(id, callback)
 	ipc.send_cmd("library", {
-		action = {
-			remove_track = { id = id },
-		},
+		action = "remove_track",
+		id = id,
 	}, function(resp)
 		if callback then
 			callback(resp)
@@ -510,9 +588,8 @@ end
 
 function ipc.library_get_recent(count, callback)
 	ipc.send_cmd("library", {
-		action = {
-			get_recent = { count = count or 50 },
-		},
+		action = "get_recent",
+		count = count or 50,
 	}, function(resp)
 		if callback and resp and resp.tracks then
 			callback(resp.tracks)
@@ -601,8 +678,8 @@ end
 
 function ipc.yt_resolve_stream(url, callback)
 	ipc.send_cmd("yt_resolve_stream", { url = url }, function(resp)
-		if callback and resp and resp.stream_info then
-			callback(resp.stream_info)
+		if callback and resp and resp.info then
+			callback(resp.info)
 		end
 	end)
 end
@@ -613,8 +690,8 @@ end
 
 function ipc.queue_list(callback)
 	ipc.send_cmd("queue", { action = "list" }, function(resp)
-		if callback and resp and resp.queue_state then
-			callback(resp.queue_state)
+		if callback and resp and resp.queue then
+			callback(resp.queue, resp.cursor)
 		end
 	end)
 end
@@ -629,9 +706,9 @@ end
 
 function ipc.queue_add(path, position, callback)
 	ipc.send_cmd("queue", {
-		action = {
-			add = { path = path, position = position or nil },
-		},
+		action = "add",
+		paths = { path },
+		position = position or nil,
 	}, function(resp)
 		if callback then
 			callback(resp)
@@ -641,9 +718,8 @@ end
 
 function ipc.queue_remove(index, callback)
 	ipc.send_cmd("queue", {
-		action = {
-			remove = { index = index },
-		},
+		action = "remove",
+		index = index,
 	}, function(resp)
 		if callback then
 			callback(resp)
@@ -653,9 +729,9 @@ end
 
 function ipc.queue_move(from, to, callback)
 	ipc.send_cmd("queue", {
-		action = {
-			move = { from = from, to = to },
-		},
+		action = "move",
+		from = from,
+		to = to,
 	}, function(resp)
 		if callback then
 			callback(resp)
@@ -683,8 +759,13 @@ function ipc.toggle_shuffle(callback)
 	end)
 end
 
+-- RepeatMode is PascalCase on the wire. Accept lowercase user input and map
+-- it; unknown modes fall back to the daemon's own error handling.
+local REPEAT_MODES = { off = "Off", one = "One", all = "All" }
+
 function ipc.cycle_repeat(mode, callback)
-	ipc.send_cmd("cycle_repeat", { mode = mode or "off" }, function(resp)
+	local wire = REPEAT_MODES[mode] or mode
+	ipc.send_cmd("cycle_repeat", { mode = wire }, function(resp)
 		if callback then
 			callback(resp)
 		end
@@ -738,90 +819,37 @@ end
 -- ============================================================================
 -- Cover Art: resolution, caching, image.nvim integration
 -- ============================================================================
+-- Implemented in lua/gtm/cover.lua (module `coverart`, pulled in at the top
+-- of this file): daemon-first fetch via `ipc.get_cover_art`, hash-keyed
+-- plugin cache under stdpath("cache")/gtm/cover, and sidecar fallbacks.
+-- `coverart.available()` gates the image rendering in the float.
 
-local coverart = {
-	_cache_dir = nil,
-}
-
-function coverart._get_cache_dir()
-	if not coverart._cache_dir then
-		local data_dir = os.getenv("XDG_CACHE_HOME") or (os.getenv("HOME") .. "/.cache")
-		coverart._cache_dir = data_dir .. "/gtm/covers"
-		vim.fn.mkdir(coverart._cache_dir, "p")
-	end
-	return coverart._cache_dir
-end
-
-function coverart.available()
-	local ok, image = pcall(require, "image")
-	return ok and image ~= nil
-end
-
-function coverart.resolve(track_path, cover_art_field, callback)
-	if not track_path or track_path == "" then
-		callback(nil)
-		return
-	end
-
-	if cover_art_field and cover_art_field ~= "" and vim.fn.filereadable(cover_art_field) == 1 then
-		callback(cover_art_field)
-		return
-	end
-
-	local dir = vim.fn.fnamemodify(track_path, ":h")
-	local candidates = { "cover.jpg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png", "cover.jpeg", "folder.jpeg" }
-	for _, name in ipairs(candidates) do
-		local path = dir .. "/" .. name
-		if vim.fn.filereadable(path) == 1 then
-			callback(path)
+-- Canonical daemon-first fetch, shared by the float and the reactive theme:
+-- plugin cache hit first, then the daemon's get_cover_art, then local
+-- sidecars — resolved exactly once per track via coverart.fetch's dedupe.
+local function fetch_cover(track, callback)
+	coverart.fetch(track, function(t, done)
+		if not t then
+			done(nil)
 			return
 		end
-	end
-
-	local cache_dir = coverart._get_cache_dir()
-	local hash = vim.fn.sha256(track_path):sub(1, 16)
-	local cached = cache_dir .. "/" .. hash .. ".jpg"
-
-	if vim.fn.filereadable(cached) == 1 then
-		callback(cached)
-		return
-	end
-
-	vim.fn.jobstart({
-		"ffmpeg", "-i", track_path,
-		"-an", "-vcodec", "mjpeg", "-frames:v", "1",
-		"-y", cached,
-	}, {
-		on_exit = function(_, code)
-			vim.schedule(function()
-				if code == 0 and vim.fn.filereadable(cached) == 1 then
-					callback(cached)
-				else
-					callback(nil)
-				end
-			end)
-		end,
-	})
-end
-
-function coverart.cleanup()
-	if coverart._cache_dir then
-		vim.fn.delete(coverart._cache_dir, "rf")
-	end
+		ipc.get_cover_art(t, done)
+	end, callback)
 end
 
 -- ============================================================================
 -- Float: native playback UI in a floating window
 -- ============================================================================
 
-local float = {
+float = {
 	win_id = nil,
 	buf_id = nil,
 	cover_win_id = nil,
 	cover_buf_id = nil,
 	_image = nil,
 	_timer = nil,
-	_last_track_path = nil,
+	_hl_ns = nil,
+	_cover_size = 0,
 }
 
 function float.toggle(_opts)
@@ -852,7 +880,7 @@ function float.close()
 	end
 	float.win_id = nil
 	float.buf_id = nil
-	float._last_track_path = nil
+	float._cover_size = 0
 end
 
 function float.open(_opts)
@@ -887,6 +915,7 @@ function float.open(_opts)
 	end
 
 	float._render()
+	float._refresh_cover()
 	float._start_refresh_timer()
 
 	vim.api.nvim_create_autocmd("BufWipeout", {
@@ -905,7 +934,7 @@ function float.open(_opts)
 			float.cover_buf_id = nil
 			float.win_id = nil
 			float.buf_id = nil
-			float._last_track_path = nil
+			float._cover_size = 0
 		end,
 	})
 
@@ -917,23 +946,29 @@ function float.is_open()
 end
 
 function float._create_cover_window(parent_width, parent_height, float_cfg)
+	-- Left-panel layout: the art sits inside the float's left edge and the
+	-- text buffer is indented by cover_size + 4 so nothing overlaps.
 	local cover_size = math.min(
 		math.floor(parent_width * 0.35),
 		math.floor(parent_height * 0.6),
 		20
 	)
+	float._cover_size = cover_size
 
 	float.cover_buf_id = vim.api.nvim_create_buf(false, true)
 	vim.bo[float.cover_buf_id].buftype = "nofile"
 	vim.bo[float.cover_buf_id].bufhidden = "wipe"
 	vim.bo[float.cover_buf_id].filetype = "gtm-cover"
 
+	local col = math.floor((vim.o.columns - parent_width) / 2)
+	local row = math.floor((vim.o.lines - vim.o.cmdheight - parent_height) / 2)
+
 	float.cover_win_id = vim.api.nvim_open_win(float.cover_buf_id, false, {
 		relative = "editor",
 		width = cover_size,
 		height = cover_size,
-		row = math.floor((vim.o.lines - vim.o.cmdheight - parent_height) / 2) + 2,
-		col = math.floor((vim.o.columns - parent_width) / 2) + 2,
+		row = row + 2,
+		col = col + 2,
 		border = float_cfg.border or "rounded",
 		style = "minimal",
 		focusable = false,
@@ -942,7 +977,7 @@ function float._create_cover_window(parent_width, parent_height, float_cfg)
 end
 
 function float._render_cover(cover_path)
-	if not coverart.available() or not cover_path then
+	if not coverart.available() then
 		return
 	end
 
@@ -953,12 +988,22 @@ function float._render_cover(cover_path)
 		float._image = nil
 	end
 
-	float._image = image.from_file(cover_path, {
+	if not float.cover_win_id or not vim.api.nvim_win_is_valid(float.cover_win_id) then
+		return
+	end
+
+	if not cover_path or vim.fn.filereadable(cover_path) ~= 1 then
+		-- Placeholder keeps the left panel's shape when there is no art.
+		vim.api.nvim_buf_set_lines(float.cover_buf_id, 0, -1, false, { "", "  ♪", "" })
+		return
+	end
+
+	local ok, img = pcall(image.from_file, cover_path, {
 		window = float.cover_win_id,
 		buffer = float.cover_buf_id,
 		id = "gtm_cover_art",
 	})
-
+	float._image = ok and img or nil
 	if float._image then
 		float._image:render()
 	end
@@ -970,7 +1015,18 @@ function float._render()
 	end
 
 	local s = ipc.last_status
+	local pad = float._cover_size > 0 and (float._cover_size + 4) or 2
 	local lines = {}
+	-- { line (1-based), col, len, hl group }
+	local hl = {}
+
+	local function add(text, group)
+		local line = #lines + 1
+		table.insert(lines, string.rep(" ", pad) .. text)
+		if group and #text > 0 then
+			table.insert(hl, { line, pad, #text, group })
+		end
+	end
 
 	if s and s.current_track then
 		local t = s.current_track
@@ -982,55 +1038,86 @@ function float._render()
 		local pos = ipc.estimated_pos()
 		local dur = t.duration or 0
 
-		table.insert(lines, "")
-		if not (coverart.available() and float._image) then
-			table.insert(lines, string.format("  %s  %s", icon, title))
-			table.insert(lines, string.format("  by %s", artist))
-			if album ~= "" then
-				table.insert(lines, string.format("  on %s", album))
-			end
-		else
-			table.insert(lines, string.format("  %s  %s", icon, title))
-			table.insert(lines, string.format("  %s", artist))
-			if album ~= "" then
-				table.insert(lines, string.format("  %s", album))
-			end
+		add("", nil)
+		local icon_text = "  " .. icon
+		local title_text = "  " .. title
+		table.insert(lines, string.rep(" ", pad) .. icon_text .. title_text)
+		table.insert(hl, { #lines, pad, #icon_text, "GtmIcon" })
+		table.insert(hl, { #lines, pad + #icon_text, #title_text, "GtmTitle" })
+
+		add(artist, "GtmArtist")
+		if album ~= "" then
+			add(album, "GtmAlbum")
 		end
-		table.insert(lines, "")
-		table.insert(lines, string.format("  %s / %s", fmt_time(pos), fmt_time(dur)))
-		table.insert(lines, "  " .. progress(pos, dur, 30))
-		table.insert(lines, string.format("  vol:%d%%", vol))
+		add("", nil)
+		add(string.format("%s / %s", fmt_time(pos), fmt_time(dur)), "GtmTime")
+
+		local bar_width = math.max(10, math.min(40, vim.o.columns - pad - 8))
+		local bar = progress(pos, dur, bar_width)
+		local filled = bar:find("─") and (bar:find("─") - 1) or #bar
+		local bar_line = string.rep(" ", pad) .. "  " .. bar
+		table.insert(lines, bar_line)
+		table.insert(hl, { #lines, pad + 2, filled, "GtmBar" })
+		if filled < #bar then
+			table.insert(hl, { #lines, pad + 2 + filled, #bar - filled, "GtmBarEmpty" })
+		end
+
+		add(string.format("vol:%d%%", vol), "GtmHint")
+		local extras = {}
 		if s.shuffle then
-			table.insert(lines, "  shuffle on")
+			table.insert(extras, "shuffle on")
 		end
 		if s["repeat"] and s["repeat"] ~= "off" then
-			table.insert(lines, "  repeat: " .. s["repeat"])
+			table.insert(extras, "repeat: " .. s["repeat"])
 		end
-		table.insert(lines, "")
-		table.insert(lines, "  [Space] play/pause  [n] next  [p] prev  [-/+] vol  [q] close")
+		if #extras > 0 then
+			add(table.concat(extras, "  "), "GtmHint")
+		end
+		add("", nil)
+		add("[Space] play/pause  [n] next  [p] prev  [-/+] vol  [q] close", "GtmHint")
 	else
-		table.insert(lines, "")
-		table.insert(lines, "  GTM - not playing")
-		table.insert(lines, "")
-		table.insert(lines, "  Press [q] to close")
+		add("", nil)
+		add("GTM - not playing", "GtmTitle")
+		add("", nil)
+		add("Press [q] to close", "GtmHint")
 	end
 
 	vim.api.nvim_buf_set_lines(float.buf_id, 0, -1, false, lines)
 
-	if s and s.current_track then
-		local track = s.current_track
-		local track_path = track.path or ""
-		if track_path ~= float._last_track_path then
-			float._last_track_path = track_path
-			coverart.resolve(track_path, track.cover_art, function(path)
-				vim.schedule(function()
-					if float.is_open() then
-						float._render_cover(path)
-					end
-				end)
-			end)
-		end
+	if float._hl_ns then
+		vim.api.nvim_buf_clear_namespace(float.buf_id, float._hl_ns, 0, -1)
 	end
+	for _, rec in ipairs(hl) do
+		vim.api.nvim_buf_add_highlight(float.buf_id, float._hl(), rec[4], rec[1] - 1, rec[2], rec[2] + rec[3])
+	end
+end
+
+function float._hl()
+	if not float._hl_ns then
+		float._hl_ns = vim.api.nvim_create_namespace("gtm_float")
+	end
+	return float._hl_ns
+end
+
+-- Fetch the current track's art (cache → daemon get_cover_art → sidecar) and
+-- render it into the left panel. Called on float open and after each track
+-- change; coverart.fetch dedupes concurrent requests per track.
+function float._refresh_cover()
+	if not float.is_open() then
+		return
+	end
+	local track = ipc.last_status and ipc.last_status.current_track
+	if not track then
+		float._render_cover(nil)
+		return
+	end
+	fetch_cover(track, function(path)
+		vim.schedule(function()
+			if float.is_open() then
+				float._render_cover(path)
+			end
+		end)
+	end)
 end
 
 function float._start_refresh_timer()
@@ -1138,9 +1225,16 @@ end
 
 function statusline.start(_opts)
 	statusline.stop()
+	-- The pulse event stream (playback_started, volume_changed, ...) drives
+	-- the UI now; this slow timer is a liveness resync so state drifts
+	-- (e.g. Spotify sync, position on pause) self-heal.
 	statusline._timer = uv.new_timer()
-	statusline._timer:start(0, _opts.statusline_interval or 1000, function()
-		ipc.send_cmd("get_status")
+	statusline._timer:start(0, _opts.resync_interval or 30000, function()
+		ipc.send_cmd("get_status_lite", nil, function(resp)
+			if resp and resp.state then
+				ipc._set_status(resp.state)
+			end
+		end)
 	end)
 end
 
@@ -1261,7 +1355,7 @@ function library.refresh(opts)
 	end)
 end
 
-function library.render(opts)
+function library.render(_opts)
 	if not library.buf_id or not vim.api.nvim_buf_is_valid(library.buf_id) then
 		return
 	end
@@ -1417,8 +1511,8 @@ end
 function yt._poll_results()
 	ipc.yt_search_poll(function(resp)
 		vim.schedule(function()
-			if resp and resp.yt_search_results and resp.yt_search_results.results then
-				yt.results = resp.yt_search_results.results
+			if resp and resp.results then
+				yt.results = resp.results
 				yt._show_picker()
 			elseif resp and resp.ok then
 				vim.defer_fn(function()
@@ -1567,6 +1661,24 @@ function commands.register(_opts)
 		elseif sub == "repeat" then
 			local mode = fargs[2] or "all"
 			ipc.cycle_repeat(mode)
+		elseif sub == "theme" then
+			local arg = fargs[2]
+			if arg == "reset" then
+				theme.clear()
+				vim.notify("[gtm] reactive theme reset")
+			elseif arg == "status" or not arg then
+				if theme.is_enabled() then
+					local hexes = theme.palette_hexes(theme.current_palette() or {})
+					vim.notify(string.format(
+						"[gtm] reactive theme: primary=%s secondary=%s tertiary=%s bg=%s",
+						hexes.primary, hexes.secondary, hexes.tertiary, hexes.bg
+					))
+				else
+					vim.notify("[gtm] reactive theme disabled (set opts.theme.reactive = true)")
+				end
+			else
+				vim.notify("Gtm theme: [status|reset]", vim.log.levels.ERROR)
+			end
 		elseif sub == "mute" then
 			ipc.toggle_mute()
 		elseif sub == "seek" then
@@ -1665,11 +1777,11 @@ function commands.register(_opts)
 		end
 	end, {
 		nargs = "+",
-		complete = function(arg_lead, cmdline, cursor_pos)
+		complete = function(arg_lead, cmdline, _cursor_pos)
 			local subs = {
 				"float", "toggle", "play", "next", "prev", "stop",
 				"volup", "voldown", "status", "disconnect",
-				"shuffle", "repeat", "mute", "seek",
+				"shuffle", "repeat", "theme", "mute", "seek",
 				"library", "lib", "playlists", "scan",
 				"eq",
 				"yt",
@@ -1683,12 +1795,21 @@ function commands.register(_opts)
 			if parts[2] == "eq" then
 				return vim.tbl_filter(function(s)
 					return s:find(arg_lead, 1, true) == 1
-				end, { "on", "off", "flat", "pop", "rock", "jazz", "classical", "bass", "vocal", "electronic", "hip_hop", "latin", "acoustic", "podcast", "dance", "headphones", "speaker" })
+				end, {
+					"on", "off", "flat", "pop", "rock", "jazz", "classical",
+					"bass", "vocal", "electronic", "hip_hop", "latin", "acoustic",
+					"podcast", "dance", "headphones", "speaker",
+				})
 			end
 			if parts[2] == "repeat" then
 				return vim.tbl_filter(function(s)
 					return s:find(arg_lead, 1, true) == 1
 				end, { "off", "one", "all" })
+			end
+			if parts[2] == "theme" then
+				return vim.tbl_filter(function(s)
+					return s:find(arg_lead, 1, true) == 1
+				end, { "status", "reset" })
 			end
 			if parts[2] == "yt" then
 				return vim.tbl_filter(function(s)
@@ -1793,11 +1914,91 @@ function I.statusline()
 	return statusline.render(I.opts)
 end
 
+function I.reset_theme()
+	theme.clear()
+end
+
 function I.setup(_opts)
 	I.opts = vim.tbl_deep_extend("force", vim.deepcopy(default_opts), _opts or {})
+	theme.setup(I.opts.theme or {})
+
+	-- Refresh any open UI after (re)connect.
+	ipc._on_connected = function()
+		if float.is_open() then
+			float._refresh_cover()
+			float._render()
+		end
+	end
+
+	-- Single fan-out for track changes: refresh the float's cover panel and
+	-- drive the reactive theme from the resolved artwork. nil (stop / track
+	-- end) restores any tinted highlights.
+	table.insert(ipc._track_hooks, function(track)
+		if not track then
+			theme.clear()
+			if float.is_open() then
+				float._render_cover(nil)
+				float._render()
+			end
+			return
+		end
+		if not theme.is_enabled() and not float.is_open() then
+			return
+		end
+		fetch_cover(track, function(path)
+			vim.schedule(function()
+				if float.is_open() then
+					float._render_cover(path)
+					float._render()
+				end
+				if theme.is_enabled() then
+					if path then
+						theme.extract(path, function(pal)
+							if pal then
+								theme.apply(pal)
+							else
+								theme.clear()
+							end
+						end)
+					else
+						theme.clear()
+					end
+				end
+			end)
+		end)
+	end)
+
 	ipc.connect(I.opts.socket_path)
 	commands.register(I.opts)
 	statusline.start(I.opts)
+
+	vim.api.nvim_create_autocmd("ColorScheme", {
+		callback = function()
+			-- Re-derive the link-based Gtm* groups against the new scheme and
+			-- re-apply any active tinted highlights, keeping the layout's colors
+			-- coherent after a colorscheme switch.
+			theme.rebundle()
+			if float.is_open() then
+				float._render()
+			end
+		end,
+	})
+
+	vim.api.nvim_create_autocmd("VimResized", {
+		callback = function()
+			if float.is_open() then
+				float._render()
+			end
+		end,
+	})
+
+	vim.api.nvim_create_autocmd("VimLeavePre", {
+		callback = function()
+			statusline.stop()
+			events.disconnect()
+			theme.restore()
+		end,
+	})
 end
 
 I._ipc = ipc
@@ -1806,5 +2007,7 @@ I._statusline = statusline
 I._library = library
 I._yt = yt
 I._coverart = coverart
+I._theme = theme
+I._events = events
 
 return I

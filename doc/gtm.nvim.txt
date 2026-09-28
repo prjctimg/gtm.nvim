@@ -13,7 +13,9 @@ CONTENTS                                                    *gtm.nvim-contents*
   5. YouTube ............ |gtm.nvim-youtube|
   6. Statusline ......... |gtm.nvim-statusline|
   7. Float .............. |gtm.nvim-float|
-  8. Config ............. |gtm.nvim-config|
+  8. Cover art .......... |gtm.nvim-cover|
+  9. Reactive theming ... |gtm.nvim-theme|
+  10. Config ............. |gtm.nvim-config|
 
 ==============================================================================
 1. SETUP                                                      *gtm.nvim-setup*
@@ -42,6 +44,9 @@ Playback:~
   :Gtm mute           Toggle mute.
   :Gtm seek {secs}    Seek to position in seconds.
   :Gtm status         Show current track in a notification.
+  :Gtm theme {status|reset}
+                      Print the active reactive-theme palette hexes, or
+                      clear the tint.
   :Gtm disconnect     Disconnect from the daemon socket.
 
 Library:~
@@ -129,21 +134,82 @@ lualine integration: >
 ==============================================================================
 7. FLOAT                                                    *gtm.nvim-float*
 
-Opens the GTM TUI in a centered floating window via `termopen("gtm")`.
-Press <Esc> inside the float to close it.
+Native floating-window playback UI. Layout:
+
+  ┌─────────────────────────────────┬─────────────────────────────────┐
+  │             cover art           │  ▶ Title                        │
+  │        (image.nvim, left panel) │     Artist                     │
+  │                                 │     Album                      │
+  │                                 │   [01:23/04:56] ━━━━━━━━━━━━   │
+  └─────────────────────────────────┴─────────────────────────────────┘
+
+The cover panel is rendered with |3rd/image.nvim| when installed; without
+it the artwork area collapses and a ♪ placeholder is drawn. The text panel
+uses per-line |nvim_buf_add_highlight| records (`GtmIcon`, `GtmTitle`,
+`GtmArtist`, `GtmAlbum`, `GtmTime`, `GtmBar`, `GtmBarEmpty`) plus the
+`NormalFloat`/`FloatBorder`/`FloatTitle`/`FloatFooter` groups, so the whole
+float honors the reactive theme (|gtm.nvim-theme|) automatically.
+
+Toggle with |:Gtm float| or the mapped key; resize with |VimResized|.
 
 ==============================================================================
-8. CONFIG                                                  *gtm.nvim-config*
+8. COVER ART                                               *gtm.nvim-cover*
+
+Artwork resolution is daemon-first: the plugin sends |get_cover_art| on
+the command socket, decodes the base64 payload, sniffs its file signature
+(JPEG/PNG/WebP/...) and caches it under `stdpath("cache")/gtm/cover`
+keyed by track hash. `fetch()` resolution order:
+
+  1. plugin cache (hash-derived key)
+  2. daemon `get_cover_art` payload
+  3. `track.cover_path` / `cover.jpg`-style sidecars next to the audio file
+
+The cache is deliberately separate from the daemon's own cover cache; the
+plugin's `cleanup()` never touches the daemon's directory.
+
+==============================================================================
+9. REACTIVE THEMING                                         *gtm.nvim-theme*
+
+Disable by default; enable with `theme.reactive = true`.
+
+When a track starts playing, the current artwork is downscaled to 24×24
+raw RGB (via ffmpeg, falling back to ImageMagick) and quantized into a
+3-color palette (dominant, secondary, tertiary). The palette drives the
+float's global highlight groups:
+
+  - the float background gets an ambient wash of the dominant color at
+    `theme.intensity` (clamped 0..0.5);
+  - text/border accents take the palette hues through a
+    contrast-preserving adjustment;
+  - dim foreground colors are re-tuned for readability against the tint.
+
+The tint is kept while playback is paused and restored exactly — per-group
+`nvim_get_hl {link=true}` snapshots taken at setup — on stop, track
+change, colorscheme swap (`ColorScheme` rebundle), or plugin close
+(`VimLeavePre`). |:Gtm theme status| prints the active palette hexes;
+|:Gtm theme reset| clears the tint immediately.
+
+`theme.extra_groups` accepts additional highlight names to tint alongside
+the float groups.
+
+==============================================================================
+10. CONFIG                                                 *gtm.nvim-config*
 
 >lua
   require("gtm").setup({
     socket_path = nil,              -- auto-detect
     statusline_format = "compact",  -- "compact" | "detailed"
-    statusline_interval = 1000,     -- poll interval (ms)
+    resync_interval = 30000,        -- get_status_lite resync (ms)
     float = {
       width = 0.8,
       height = 0.8,
       border = "rounded",
+      cover_art = true,             -- requires 3rd/image.nvim
+    },
+    theme = {
+      reactive = false,             -- tint float from album art
+      intensity = 0.2,              -- background wash strength (0..0.5)
+      extra_groups = {},            -- extra highlights to tint
     },
     keymaps = {
       play_pause = "<leader>gp",
