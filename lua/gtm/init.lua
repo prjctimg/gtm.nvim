@@ -1922,6 +1922,23 @@ function I.setup(_opts)
 	I.opts = vim.tbl_deep_extend("force", vim.deepcopy(default_opts), _opts or {})
 	theme.setup(I.opts.theme or {})
 
+	-- Tell the loader (and any other host) that setup is owned; see
+	-- 'plugin/gtm.lua'. Safe to set before the rest of the body runs.
+	vim.g.loaded_gtm = true
+
+	-- Idempotent setup: callers may re-run `setup()` (config reload, or the
+	-- loader's default auto-setup racing the host's explicit call). Never
+	-- duplicate component state: the second call only re-applies options and
+	-- refreshes already-registered UI. Everything below this guard runs once.
+	if I._setup_done then
+		statusline.start(I.opts)
+		if float.is_open() then
+			float._render()
+		end
+		return I
+	end
+	I._setup_done = true
+
 	-- Refresh any open UI after (re)connect.
 	ipc._on_connected = function()
 		if float.is_open() then
@@ -1999,6 +2016,8 @@ function I.setup(_opts)
 			theme.restore()
 		end,
 	})
+
+	return I
 end
 
 I._ipc = ipc

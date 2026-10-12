@@ -12,6 +12,19 @@ This is free software released under the GPL-3.0 license.
 
 ## [Unreleased]
 
+### Fixed
+
+- `I.setup()` is now idempotent: repeated calls (config reload, or the
+  loader's default auto-setup racing a host's explicit `setup(opts)`) only
+  re-apply options instead of duplicating commands, keymaps, autocmds,
+  track hooks, and sockets. `setup` is safe to call from both the loader
+  and a plugin manager in any order.
+- The loader (`plugin/gtm.lua`) no longer marks the plugin as owned at load
+  time; it re-checks `vim.g.loaded_gtm` when the `VeryLazy` event actually
+  fires, so a host that takes over setup between load and `VeryLazy` is
+  never clobbered by a default `setup({})`. Docs: set
+  `vim.g.loaded_gtm = true` before the plugin loads to run your own setup.
+
 ### Added
 
 - Cover art rendering in the float via `3rd/image.nvim` (optional
