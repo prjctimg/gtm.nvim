@@ -70,6 +70,25 @@ local ipc = {
 }
 
 local uv = vim.uv
+
+-- JSON `null` decodes to `vim.NIL`, a truthy sentinel that slips through plain
+-- `if x then` / `x or fallback` idioms and crashes downstream indexing (the
+-- daemon sends `current_track: null` while idle). Deep-normalize `vim.NIL` to
+-- real `nil` at every payload boundary so the rest of the plugin can rely on
+-- normal Lua semantics. Also yields a fresh table (no aliasing of decoded msgs).
+local function denil(v)
+	if v == vim.NIL then
+		return nil
+	end
+	if type(v) ~= "table" then
+		return v
+	end
+	local out = {}
+	for k, val in pairs(v) do
+		out[k] = denil(val)
+	end
+	return out
+end
 local hrtime = uv.hrtime
 
 local function resolve_socket_path()
@@ -240,6 +259,7 @@ ipc.on_event("playback_started", function(ev)
 	ipc._is_playing = true
 	ipc._duration = ev.duration or 0
 	if ev.track then
+		local track = denil(ev.track)
 		ipc.last_status = {
 			status = "playing",
 			volume = ipc.last_status and ipc.last_status.volume or 80,
@@ -247,9 +267,11 @@ ipc.on_event("playback_started", function(ev)
 			["repeat"] = ipc.last_status and ipc.last_status["repeat"] or "off",
 			time_pos = ev.time_pos or 0,
 			duration = ev.duration or 0,
-			current_track = ev.track,
+			current_track = track,
 		}
-		ipc._set_track(ev.track)
+		if track then
+			ipc._set_track(track)
+		end
 	end
 end)
 
@@ -350,7 +372,8 @@ function ipc._set_status(state)
 	if not state then
 		return
 	end
-	local s = vim.deepcopy(state)
+	-- `vim.NIL` (JSON null) -> nil, and copy the payload (see `denil()`).
+	local s = denil(state)
 	-- PlaybackStatus / RepeatMode arrive PascalCase on the wire; normalize
 	-- to the lowercase forms the rest of the plugin expects.
 	if s.status then
@@ -373,7 +396,7 @@ end
 -- cover fetch and theme pass run once per distinct track, and notifies every
 -- registered hook (float refresh, reactive theme).
 function ipc._set_track(track)
-	if not track then
+	if type(track) ~= "table" then
 		return
 	end
 	local key = coverart.key(track)
@@ -1028,7 +1051,7 @@ function float._render()
 		end
 	end
 
-	if s and s.current_track then
+	if s and type(s.current_track) == "table" then
 		local t = s.current_track
 		local artist = t.artist or "Unknown"
 		local title = t.title or "Unknown"
@@ -1172,7 +1195,7 @@ local statusline = {
 }
 
 function statusline.compact(s)
-	if not s or not s.current_track then
+	if not s or type(s.current_track) ~= "table" then
 		return " "
 	end
 	local t = s.current_track
@@ -1186,7 +1209,7 @@ function statusline.compact(s)
 end
 
 function statusline.detailed(s)
-	if not s or not s.current_track then
+	if not s or type(s.current_track) ~= "table" then
 		return "GTM - not playing"
 	end
 	local t = s.current_track
@@ -1349,7 +1372,7 @@ end
 function library.refresh(opts)
 	ipc.library_get_tracks(nil, nil, function(result)
 		vim.schedule(function()
-			library.tracks = result or {}
+			library.tracks = denil(result) or {}
 			library.render(opts)
 		end)
 	end)
@@ -1446,7 +1469,7 @@ function library.filter()
 		if query then
 			ipc.library_get_tracks(query, nil, function(result)
 				vim.schedule(function()
-					library.tracks = result or {}
+					library.tracks = denil(result) or {}
 					library.render()
 				end)
 			end)

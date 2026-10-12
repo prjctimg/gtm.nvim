@@ -24,6 +24,14 @@ This is free software released under the GPL-3.0 license.
   fires, so a host that takes over setup between load and `VeryLazy` is
   never clobbered by a default `setup({})`. Docs: set
   `vim.g.loaded_gtm = true` before the plugin loads to run your own setup.
+- Status payload robustness: JSON `null` decodes to `vim.NIL`, a truthy
+  sentinel that slips through `if x then` / `x or fallback` idioms — an idle
+  daemon sending `current_track: null` crashed `statusline()` and the float
+  with "attempt to index vim.NIL". Payloads are now deep-normalized
+  (`vim.NIL` → `nil`) at every ingestion boundary (`_set_status`, track
+  events, library lists), and track-consuming code guards on
+  `type(track) == "table"`. `statusline()` returns " " while idle and the
+  compact/detailed text once a track is loaded.
 
 ### Added
 
