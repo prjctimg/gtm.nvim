@@ -296,10 +296,29 @@ ipc.on_event("playback_stopped", function()
 		ipc.last_status.time_pos = 0
 	end
 	ipc._clear_track()
+	-- Nothing is playing, so nothing should be tinted. A pause keeps the
+	-- palette: the user stopped to browse, not to forget the record.
+	theme.clear()
 end)
 
 ipc.on_event("track_ended", function()
 	ipc._clear_track()
+	theme.clear()
+end)
+
+ipc.on_event("reactive_palette", function(ev)
+	if not theme.is_enabled() then
+		return
+	end
+	-- The daemon extracted this from the cover of the track on air. Three
+	-- empty strings mean it had no art to read, which is a clear rather than
+	-- a black palette.
+	local pal = theme.pal_from(ev)
+	if pal then
+		theme.apply(pal)
+	else
+		theme.clear()
+	end
 end)
 
 ipc.on_event("duration_changed", function(ev)
@@ -1994,19 +2013,10 @@ function I.setup(_opts)
 					float._render_cover(path)
 					float._render()
 				end
-				if theme.is_enabled() then
-					if path then
-						theme.extract(path, function(pal)
-							if pal then
-								theme.apply(pal)
-							else
-								theme.clear()
-							end
-						end)
-					else
-						theme.clear()
-					end
-				end
+				-- The palette is not extracted here. `fetch_cover` above already
+				-- asked gtmd for this track's art, and the daemon extracts and
+				-- broadcasts `reactive_palette` in reply; the handler below
+				-- applies it. This call is what makes that happen.
 			end)
 		end)
 	end)
@@ -2020,7 +2030,10 @@ function I.setup(_opts)
 			-- Re-derive the link-based Gtm* groups against the new scheme and
 			-- re-apply any active tinted highlights, keeping the layout's colors
 			-- coherent after a colorscheme switch.
-			theme.rebundle()
+			-- The new scheme's semantic colours are now in place; re-snapshot
+			-- them and re-apply the palette we already hold, so a colorscheme
+			-- switch changes the meanings and not the surfaces.
+			theme.on_colorscheme()
 			if float.is_open() then
 				float._render()
 			end

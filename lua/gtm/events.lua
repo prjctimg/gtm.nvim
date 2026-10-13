@@ -49,6 +49,7 @@ local WANTED = {
 	mono_changed = true,
 	radio_title_changed = true,
 	metadata_changed = true,
+	reactive_palette = true,
 	heartbeat = true,
 }
 
@@ -90,6 +91,8 @@ local EVENT_FIELDS = {
 	mono_changed = { "enabled" },
 	radio_title_changed = { "title" },
 	metadata_changed = { "detail" },
+	-- Three hex strings in Rust declaration order; empty means no art.
+	reactive_palette = { "primary", "secondary", "tertiary" },
 }
 
 local function normalize_track(raw)

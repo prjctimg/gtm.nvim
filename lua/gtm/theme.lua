@@ -1,179 +1,75 @@
--- Copyright (c) 2025 - present
+-- Copyright (c) 2026
 -- Author: prjctimg <prjctimg@outlook.com>
--- gtm.theme: reactive, cover-derived highlight groups
---
--- When `theme.reactive` is enabled and a track with artwork is playing, the
--- album art's dominant colors tint **global** highlight groups: every surface
--- group's background takes a faint wash of the dominant color (`intensity`),
--- while the standard syntax/UI accent groups (Title, Function, Keyword, Type,
--- String, ...) take the palette's primary/secondary/tertiary colors through a
--- contrast-preserving adjust — a faithful port of the daemon's own reactive
--- pass in `gtm/src/reactive.rs` (extract_palette + derive_theme).
---
--- Semantics are preserved: error/warning/diff/diagnostic/spell groups (and any
--- group whose name matches those families) are never recolored, so invalid
--- states keep their meaning while the rest of the theme reacts to the artwork.
--- The float's own groups additionally get an explicit derivation (background
--- wash + per-line accents) so the playback UI stays coherent.
---
--- Palette pipeline mirrors the daemon:
---
---   extract()   downscale the cover to 24x24 raw RGB via ffmpeg / ImageMagick
---   quantize()  5-bit histogram -> top-10 dominant colors (color-thief stand-in)
---   select()    primary + hue-furthest secondary + tertiary (sat > 0.12 gate)
---   derive()    blend the palette into the colorscheme's float groups
---
--- Lifecycle: the tint is applied on track change and **kept while paused**,
--- restored on stop / track change / close. Setup snapshots every global
--- highlight group, and `ColorScheme` re-snapshots the freshly applied scheme
--- and re-applies any active palette so the tint stays coherent across theme
--- swaps. Everything mutates global groups by design (user preference); restore
--- is exact via an `nvim_get_hl` round-trip of the groups actually touched.
+-- Reactive theme: derive the editor colorscheme from the album palette
 --
 -- This is free software released under the GPL-3.0 license.
 
+--! ## Where the palette comes from
+--!
+--! gtmd extracts it from the cover of the track on air and broadcasts a
+--! `reactive_palette` event; this module never decodes an image. The editor
+--! colorscheme is snapshotted for two things only: restoring, and the semantic
+--! groups that carry meaning rather than decoration.
+--!
+--! ## Why the surfaces are built rather than blended
+--!
+--! Blending the palette into the colorscheme makes every surface a function of
+--! both, so `Normal` is never the album's colour and switching colorschemes
+--! changes the result. Here the album hue drives the whole ramp and the
+--! colourscheme contributes nothing but the semantic groups.
+
 local T = {}
 
--- Groups the float's explicit derivation always writes. Everything else is
--- handled by the generic global pass (background wash + accent roles).
-local FLOAT_GROUPS = { "NormalFloat", "FloatBorder", "FloatTitle", "FloatFooter" }
-
-local GTM_GROUPS = {
-	"GtmIcon",
-	"GtmTitle",
-	"GtmArtist",
-	"GtmAlbum",
-	"GtmTime",
-	"GtmBar",
-	"GtmBarEmpty",
-	"GtmVolume",
-	"GtmHint",
-}
-
--- Initial definitions: everything is a link so no palette is hard-coded and
--- the reactive pass overrides per-line via explicit attrs.
-local BASE_LINKS = {
-	GtmIcon = "Special",
-	GtmTitle = "Title",
-	GtmArtist = "String",
-	GtmAlbum = "Comment",
-	GtmTime = "Number",
-	GtmBar = "Constant",
-	GtmBarEmpty = "Comment",
-	GtmVolume = "Number",
-	GtmHint = "Comment",
-}
-
--- Groups whose fg is an accent colour and therefore takes one palette slot.
--- Mirrors the daemon's accent / secondary_accent / tertiary_accent semantic
--- slots so the recolor is coherent and predictable rather than a blind
--- hue-rotate. Groups absent from the active scheme are simply skipped.
-local ROLE_PRIMARY = {
-	"Title",
-	"FloatTitle",
-	"Directory",
-	"Special",
-	"SpecialKey",
-	"Tag",
-	"Question",
-	"MoreMsg",
-	"ModeMsg",
-	"Function",
-	"Identifier",
-	"Statement",
-	"Conditional",
-	"Repeat",
-	"Keyword",
-	"Operator",
-	"Exception",
-	"Label",
-}
-local ROLE_SECONDARY = {
-	"String",
-	"Character",
-	"Constant",
-	"Number",
-	"Boolean",
-	"Float",
-}
-local ROLE_TERTIARY = {
-	"Type",
-	"Typedef",
-	"Structure",
-	"StorageClass",
-	"PreProc",
-	"Include",
-	"Define",
-	"Macro",
-	"PreCondit",
-}
-
--- Name substrings that mark a group as semantic. Such groups keep both their
--- foreground and background so invalid states stay unambiguous.
-local SEMANTIC_SUBSTRINGS = {
-	"Error",
-	"error",
-	"Warn",
-	"warn",
-	"Diff",
-	"diff",
-	"Diagnostic",
-	"LspDiagnostics",
-	"Spell",
-	"spell",
-	"health",
-	"Health",
-	"GitSigns",
-	"GitGutter",
-	"Added",
-	"Removed",
-	"Changed",
-	"Todo",
-}
-
-local WHITE = { 255, 255, 255 }
-local BLACK = { 0, 0, 0 }
-
-T._opts = { reactive = false, intensity = 0.2, extra_groups = {}, scope = "global" }
-T._snap = {}
-T._base = nil
-T._palette = nil
-T._derived = nil
-T._ctx = nil
-T._touched = {}
-
 -- ============================================================================
--- Color math (ports of gtm/src/reactive.rs)
+-- Colour maths
 -- ============================================================================
+
+--- 24-bit int -> {r,g,b}.
+local function to_rgb(v)
+	if type(v) == "number" then
+		return { math.floor(v / 65536), math.floor(v / 256) % 256, v % 256 }
+	end
+	return { 30, 30, 30 }
+end
+
+--- "#rrggbb" -> {r,g,b}, or nil. The wire form: three hex strings, empty
+--- meaning "no art".
+function T.from_hex(s)
+	if type(s) ~= "string" then
+		return nil
+	end
+	local h = s:match("^#(%x%x%x%x%x%x)$")
+	if not h then
+		return nil
+	end
+	return {
+		tonumber(h:sub(1, 2), 16),
+		tonumber(h:sub(3, 4), 16),
+		tonumber(h:sub(5, 6), 16),
+	}
+end
+
+--- Build a palette from the event's three fields, or nil if any is missing.
+function T.pal_from(ev)
+	if type(ev) ~= "table" then
+		return nil
+	end
+	local p, s, t = T.from_hex(ev.primary), T.from_hex(ev.secondary), T.from_hex(ev.tertiary)
+	if not (p and s and t) then
+		return nil
+	end
+	return { primary = p, secondary = s, tertiary = t }
+end
 
 local function clamp(v, lo, hi)
 	return math.max(lo, math.min(hi, v))
 end
 
-local function luminance(c)
-	return 0.299 * c[1] + 0.587 * c[2] + 0.114 * c[3]
-end
-
-local function rgb_to_hsv(c)
-	local r, g, b = c[1] / 255, c[2] / 255, c[3] / 255
-	local max, min = math.max(r, g, b), math.min(r, g, b)
-	local d = max - min
-	local h = 0
-	if d > 0 then
-		if math.abs(max - r) < 1e-6 then
-			h = ((g - b) / d) % 6
-		elseif math.abs(max - g) < 1e-6 then
-			h = (b - r) / d + 2
-		else
-			h = (r - g) / d + 4
-		end
-		h = h * 60
-	end
-	local s = max <= 0 and 0 or d / max
-	return h, s, max
-end
-
 local function hsv_to_rgb(h, s, v)
+	h = h % 360
+	if h < 0 then
+		h = h + 360
+	end
 	local c = v * s
 	local x = c * (1 - math.abs((h / 60) % 2 - 1))
 	local m = v - c
@@ -191,32 +87,48 @@ local function hsv_to_rgb(h, s, v)
 	else
 		r, g, b = c, 0, x
 	end
-	return math.floor((r + m) * 255), math.floor((g + m) * 255), math.floor((b + m) * 255)
-end
-
---- Circular hue distance in degrees, range [0, 180].
-local function hue_distance(a, b)
-	local d = math.abs(a - b) % 360
-	if d > 180 then
-		return 360 - d
-	end
-	return d
-end
-
-local function hue_shift(c, turns)
-	local h, s, v = rgb_to_hsv(c)
-	return hsv_to_rgb((h + 360 * turns) % 360, math.max(s, 0.25), math.min(v * 1.15, 1))
-end
-
-local function blend(c1, c2, t)
 	return {
-		math.floor(c1[1] * (1 - t) + c2[1] * t),
-		math.floor(c1[2] * (1 - t) + c2[2] * t),
-		math.floor(c1[3] * (1 - t) + c2[3] * t),
+		math.floor((r + m) * 255 + 0.5),
+		math.floor((g + m) * 255 + 0.5),
+		math.floor((b + m) * 255 + 0.5),
 	}
 end
 
---- Nudge an accent away from extreme luminance on the current theme.
+local function rgb_to_hsv(c)
+	local r, g, b = c[1] / 255, c[2] / 255, c[3] / 255
+	local max, min = math.max(r, g, b), math.min(r, g, b)
+	local d = max - min
+	local h = 0
+	if d > 0 then
+		if math.abs(max - r) < 1e-9 then
+			h = ((g - b) / d) % 6
+		elseif math.abs(max - g) < 1e-9 then
+			h = (b - r) / d + 2
+		else
+			h = (r - g) / d + 4
+		end
+		h = h * 60
+	end
+	local s = max <= 0 and 0 or d / max
+	return h, s, max
+end
+
+local function luminance(c)
+	return 0.299 * c[1] + 0.587 * c[2] + 0.114 * c[3]
+end
+
+--- Linear blend of two {r,g,b}.
+local function mix(a, b, t)
+	return {
+		math.floor(a[1] * (1 - t) + b[1] * t + 0.5),
+		math.floor(a[2] * (1 - t) + b[2] * t + 0.5),
+		math.floor(a[3] * (1 - t) + b[3] * t + 0.5),
+	}
+end
+
+--- Nudge a colour toward white or black so it is readable as an accent on the
+--- current polarity. Bounded, because an unbounded correction to a target
+--- luminance turns a vivid album colour into a pastel.
 local function adjust(c, light)
 	local l = luminance(c)
 	local target = light and 70 or 170
@@ -225,318 +137,108 @@ local function adjust(c, light)
 	end
 	local t = clamp((target - l) / 255, -0.35, 0.35)
 	if t >= 0 then
-		return blend(c, WHITE, t)
+		return mix(c, { 255, 255, 255 }, t)
 	end
-	return blend(c, BLACK, -t)
-end
-
---- Ensure fg_dim keeps >= 60 luminance difference from the reactive bg.
-local function adjust_for_contrast(c, target_lum)
-	local current = luminance(c)
-	if math.abs(target_lum - current) >= 60 then
-		return c
-	end
-	local t = clamp((target_lum - current) / 255, -0.4, 0.4)
-	if t >= 0 then
-		return blend(c, WHITE, t)
-	end
-	return blend(c, BLACK, -t)
-end
-
--- ============================================================================
--- Palette extraction
--- ============================================================================
-
-local TOOLS = {
-	{
-		name = "ffmpeg",
-		build = function(input, output)
-			return {
-				"ffmpeg",
-				"-v",
-				"error",
-				"-nostdin",
-				"-i",
-				input,
-				"-vf",
-				"scale=24:24:flags=area",
-				"-f",
-				"rawvideo",
-				"-pix_fmt",
-				"rgb24",
-				"-y",
-				output,
-			}
-		end,
-	},
-	{
-		name = "magick",
-		build = function(input, output)
-			return { "magick", input, "-resize", "24x24!", "-depth", "8", output }
-		end,
-	},
-	{
-		name = "convert",
-		build = function(input, output)
-			return { "convert", input, "-resize", "24x24!", "-depth", "8", output }
-		end,
-	},
-}
-
---- Downscale a cover to 24x24 raw RGB through the first available tool.
---- ffmpeg writes rawvideo (extension irrelevant); ImageMagick needs the `.rgb`
---- suffix to select its raw-RGB coder.
-function T.extract(path, cb)
-	local tool = nil
-	for _, t in ipairs(TOOLS) do
-		if vim.fn.executable(t.name) == 1 then
-			tool = t
-			break
-		end
-	end
-	if not tool then
-		vim.schedule(function()
-			cb(nil)
-		end)
-		return
-	end
-	local output = vim.fn.tempname() .. (tool.name == "ffmpeg" and ".raw" or ".rgb")
-	vim.system(tool.build(path, output), { text = true, stderr = "pipe", timeout = 10000 }, function(res)
-		vim.schedule(function()
-			local ok = res and res.code == 0
-			local raw = ok and vim.fn.readfile(output, "b") or nil
-			if raw then
-				raw = table.concat(raw, "")
-			end
-			vim.fn.delete(output)
-			if raw and #raw >= 3 then
-				local palette = T.quantize(raw)
-				if palette then
-					cb(T.select(palette))
-					return
-				end
-			end
-			cb(nil)
-		end)
-	end)
-end
-
---- 5-bit histogram over raw RGB bytes; returns up to 10 dominant colors
---- ordered by pixel count, averaged within each quantized bucket.
-function T.quantize(raw)
-	local n = math.floor(#raw / 3)
-	if n < 3 then
-		return nil
-	end
-	local order = {} -- bucket -> index into hist
-	local hist = {} -- { count, sr, sg, sb }
-	for i = 1, n * 3, 3 do
-		local r = raw:byte(i)
-		local g = raw:byte(i + 1)
-		local b = raw:byte(i + 2)
-		local key = math.floor(r / 8) * 1024 + math.floor(g / 8) * 32 + math.floor(b / 8)
-		local idx = order[key]
-		if not idx then
-			idx = #hist + 1
-			order[key] = idx
-			hist[idx] = { 0, 0, 0, 0 }
-		end
-		local e = hist[idx]
-		e[1] = e[1] + 1
-		e[2] = e[2] + r
-		e[3] = e[3] + g
-		e[4] = e[4] + b
-	end
-	table.sort(hist, function(a, b)
-		return a[1] > b[1]
-	end)
-	local palette = {}
-	local top = math.min(10, #hist)
-	for i = 1, top do
-		local e = hist[i]
-		palette[i] = { math.floor(e[2] / e[1]), math.floor(e[3] / e[1]), math.floor(e[4] / e[1]) }
-	end
-	return palette
-end
-
---- Pick primary/secondary/tertiary from a dominant-color list.
---- Secondary maximizes hue distance + chroma from the primary (sat > 0.12
---- gate so muddy grays never hijack accents); population order breaks ties.
-function T.select(palette)
-	if not palette or #palette == 0 then
-		return nil
-	end
-	local primary = palette[1]
-	local ph = rgb_to_hsv(primary) -- primary hue
-	local secondary, tertiary
-	local best = -1
-	for i = 2, #palette do
-		local v = palette[i]
-		local h, s = rgb_to_hsv(v)
-		local gap = hue_distance(ph, h)
-		local score = gap + 2 * s
-		if score > best and s > 0.12 then
-			best = score
-			tertiary = secondary
-			secondary = v
-		elseif not tertiary then
-			tertiary = v
-		end
-	end
-	local function fallback_mix(c, t)
-		local shifted = hue_shift(c, 0.33)
-		return {
-			math.floor(c[1] * (1 - t) + shifted[1] * t),
-			math.floor(c[2] * (1 - t) + shifted[2] * t),
-			math.floor(c[3] * (1 - t) + shifted[3] * t),
-		}
-	end
-	secondary = secondary or fallback_mix(primary, 1)
-	tertiary = tertiary or fallback_mix(secondary, 1)
-	return { primary = primary, secondary = secondary, tertiary = tertiary }
+	return mix(c, { 0, 0, 0 }, -t)
 end
 
 -- ============================================================================
 -- Highlight group management
 -- ============================================================================
 
---- 24-bit int -> {r,g,b} with graceful fallbacks (base colors).
-local function to_rgb(v, ...)
-	if type(v) == "number" then
-		return { math.floor(v / 65536), math.floor(v / 256) % 256, v % 256 }
-	end
-	for _, f in ipairs({ ... }) do
-		if type(f) == "number" then
-			return to_rgb(f)
-		end
-		if type(f) == "table" then
-			return f
-		end
-	end
-	return { 30, 30, 30 }
-end
-
---- A highlight attribute colour (24-bit int or "#rrggbb") -> {r,g,b}, or nil.
-local function color_rgb(v)
-	if type(v) == "number" then
-		return { math.floor(v / 65536), math.floor(v / 256) % 256, v % 256 }
-	end
-	if type(v) == "string" then
-		local hex = v:match("^#(%x%x%x%x%x%x)$")
-		if hex then
-			return {
-				tonumber(hex:sub(1, 2), 16),
-				tonumber(hex:sub(3, 4), 16),
-				tonumber(hex:sub(5, 6), 16),
-			}
-		end
-	end
-	return nil
-end
-
---- Tuples → "#rrggbb"; pass through anything nvim_set_hl accepts natively.
-local function cstr(c)
-	if type(c) == "table" then
-		return string.format("#%02x%02x%02x", c[1], c[2], c[3])
-	end
-	return c
-end
-
---- Set a group exactly (no merge), normalizing colour tuples to hex.
 local function set_hl(name, attrs)
-	local hl = vim.deepcopy(attrs)
-	for _, k in ipairs({ "fg", "bg", "sp" }) do
-		if hl[k] ~= nil then
-			hl[k] = cstr(hl[k])
-		end
-	end
-	vim.api.nvim_set_hl(0, name, hl)
+	vim.api.nvim_set_hl(0, name, attrs)
 end
 
---- Whether a group name belongs to a semantic family that must not react.
+--- Semantic families keep their colorscheme colours: they encode meaning, and
+--- an error that changes colour with the album is worse than no error colour.
+local SEMANTIC = {
+	Error = true,
+	WarnMsg = true,
+	MoreMsg = true,
+	Question = true,
+	Info = true,
+	Hint = true,
+	Todo = true,
+	DiagnosticError = true,
+	DiagnosticWarn = true,
+	DiagnosticInfo = true,
+	DiagnosticHint = true,
+	DiagnosticOk = true,
+	SpellBad = true,
+	SpellCap = true,
+	SpellLocal = true,
+	SpellRare = true,
+	DiffAdd = true,
+	DiffChange = true,
+	DiffDelete = true,
+	DiffText = true,
+	DiffRemoved = true,
+}
+
 local function is_semantic(name)
-	for _, s in ipairs(SEMANTIC_SUBSTRINGS) do
-		if name:find(s, 1, true) then
+	if SEMANTIC[name] then
+		return true
+	end
+	for prefix in pairs(SEMANTIC) do
+		if name:sub(1, #prefix) == prefix then
 			return true
 		end
 	end
-	return false
+	return name:match("^gitSigns") ~= nil
 end
 
-local ROLE = {}
-for _, n in ipairs(ROLE_PRIMARY) do
-	ROLE[n] = "primary"
-end
-for _, n in ipairs(ROLE_SECONDARY) do
-	ROLE[n] = "secondary"
-end
-for _, n in ipairs(ROLE_TERTIARY) do
-	ROLE[n] = "tertiary"
-end
-
---- Resolve a group name to a palette slot. Handles treesitter captures by
---- falling back to their base name (`@function.builtin` -> `Function`).
+--- Which accent slot a group takes, by name. `nil` means it takes the ramp's
+--- foreground rather than an accent.
 local function role_for(name)
-	local r = ROLE[name]
-	if r then
-		return r
-	end
-	local base = name:match("^@([%w_]+)")
-	if base then
-		local cap = base:sub(1, 1):upper() .. base:sub(2)
-		return ROLE[cap]
+	local base = name:gsub("^@", ""):gsub("[%w_]+$", "")
+	if
+		base == "function.builtin"
+		or base == "function.macro"
+		or base == "keyword"
+		or base == "type"
+		or base == "identifier"
+	then
+		return "primary"
+	elseif base == "string" or base == "character" or base == "constant" then
+		return "secondary"
+	elseif base == "comment" or base == "punctuation" then
+		return "tertiary"
 	end
 	return nil
 end
 
-local ALL_GROUPS = nil
+-- ============================================================================
+-- Snapshot and restore
+-- ============================================================================
 
-function T.groups()
-	if not ALL_GROUPS then
-		ALL_GROUPS = {}
-		vim.list_extend(ALL_GROUPS, FLOAT_GROUPS)
-		vim.list_extend(ALL_GROUPS, GTM_GROUPS)
-	end
-	return ALL_GROUPS
-end
-
---- Define the Gtm* links against the current colorscheme.
-function T._define_links()
-	for name, link in pairs(BASE_LINKS) do
-		vim.api.nvim_set_hl(0, name, { link = link })
-	end
-end
-
---- Snapshot every globally defined highlight group (with link info) plus the
---- base colors used by derive(). Called on setup and on every ColorScheme.
+--- Snapshot every global highlight group.
 function T.snapshot()
-	T._snap = vim.api.nvim_get_hl(0, {})
-
-	local nf = vim.api.nvim_get_hl(0, { name = "NormalFloat" })
-	local normal = vim.api.nvim_get_hl(0, { name = "Normal" })
-	local border = vim.api.nvim_get_hl(0, { name = "FloatBorder" })
-	local comment = vim.api.nvim_get_hl(0, { name = "Comment" })
-	T._base = {
-		bg = to_rgb(nf.bg, normal.bg, { 30, 30, 30 }),
-		fg = to_rgb(nf.fg, normal.fg, { 212, 212, 212 }),
-		border = to_rgb(border.fg, nf.fg, normal.fg, { 138, 138, 138 }),
-		fg_dim = to_rgb(comment.fg, nf.fg, normal.fg, { 138, 138, 138 }),
-	}
+	local groups = vim.api.nvim_get_names()
+	local snap = {}
+	for _, name in ipairs(groups) do
+		local ok, hl = pcall(vim.api.nvim_get_hl, 0, { name = name, link = false })
+		if ok and type(hl) == "table" then
+			snap[name] = hl
+		end
+	end
+	T._snap = snap
+	return snap
 end
 
---- Restore every touched group to its snapshot (removes the tint).
+--- Put every group the palette touched back to its snapshot value.
 function T.restore()
+	if not T._snap then
+		return
+	end
 	for name in pairs(T._touched or {}) do
 		local saved = T._snap[name]
 		if saved then
-			set_hl(name, saved)
-		else
-			vim.api.nvim_set_hl(0, name, {})
+			set_hl(name, vim.deepcopy(saved))
 		end
 	end
 	T._touched = {}
 	T._palette = nil
-	T._derived = nil
 	T._ctx = nil
 end
 
@@ -544,107 +246,92 @@ function T.is_active()
 	return T._palette ~= nil
 end
 
---- Whether reactive theming is switched on via opts.theme.reactive.
 function T.is_enabled()
-	return T._opts.reactive or false
+	return not (T._opts and T._opts.reactive == false)
 end
 
 function T.current_palette()
 	return T._palette
 end
 
---- setup: register opts, define links, snapshot the theme's base state.
 function T.setup(opts)
-	T._opts = vim.tbl_deep_extend("force", T._opts, opts or {})
-	T._define_links()
+	T._opts = opts or {}
+	T._touched = {}
+	T._palette = nil
 	T.snapshot()
 end
 
---- Re-establish links + fresh snapshot after a colorscheme swap, and re-apply
---- the active palette so the tint survives theme changes. Colorschemes reset
---- highlights with `hi clear`, so the snapshot taken here is the new scheme's
---- own base state, not a tinted pass.
-function T.rebundle()
-	T._define_links()
-	T.snapshot()
-	if T._palette then
-		T.apply(T._palette)
-	end
-end
+-- ============================================================================
+-- Derivation
+-- ============================================================================
 
---- Derive the palette context (adjusted accents + reactive surfaces).
+--- Everything the highlight pass needs, from the three album colours alone.
 local function derive_ctx(pal)
-	local base = T._base
-	local light = luminance(base.bg) > 128
-	local primary = adjust(pal.primary, light)
-	local secondary = adjust(pal.secondary, light)
-	local tertiary = adjust(pal.tertiary, light)
+	local h, s = rgb_to_hsv(pal.primary)
+	local light = luminance(pal.primary) > 140
 
-	local intensity = clamp(T._opts.intensity or 0.2, 0, 0.5)
-	local unified_bg = blend(base.bg, pal.primary, intensity)
-	local border = blend(base.border, primary, 0.55)
+	-- The album hue drives every surface; only the saturation and the four
+	-- lightness steps differ between polarities. Nothing here reads the
+	-- colorscheme, which is what makes the result independent of it.
+	local sat = light and s * 0.25 or s * 0.45
+	local bg = {}
+	if light then
+		bg = { hsv_to_rgb(h, sat, 0.975), hsv_to_rgb(h, sat, 0.945), hsv_to_rgb(h, sat, 0.910), hsv_to_rgb(h, sat, 0.850) }
+	else
+		bg = { hsv_to_rgb(h, sat, 0.060), hsv_to_rgb(h, sat, 0.090), hsv_to_rgb(h, sat, 0.120), hsv_to_rgb(h, sat, 0.170) }
+	end
 
-	local bg_lum = luminance(pal.primary)
-	local target_dim = bg_lum > 128 and (bg_lum - 60) or (bg_lum + 60)
-	local fg_dim = adjust_for_contrast(base.fg_dim, target_dim)
+	local accent = {
+		primary = adjust(pal.primary, light),
+		secondary = adjust(pal.secondary, light),
+		tertiary = adjust(pal.tertiary, light),
+	}
+	local fs = light and s * 0.15 or s * 0.12
+	local fg = hsv_to_rgb(h, fs, light and 0.16 or 0.90)
+	local fg_dim = hsv_to_rgb(h, fs, light and 0.44 or 0.60)
 
 	return {
 		light = light,
-		primary = primary,
-		secondary = secondary,
-		tertiary = tertiary,
-		primary_raw = pal.primary,
-		intensity = intensity,
-		unified_bg = unified_bg,
-		border = border,
+		hue = h,
+		bg = bg,
+		fg = fg,
 		fg_dim = fg_dim,
-		slots = { primary = primary, secondary = secondary, tertiary = tertiary },
+		accent = accent,
+		sel = mix(bg[1], accent.primary, 0.30),
+		line = mix(bg[1], accent.primary, 0.18),
+		slots = accent,
 	}
 end
 
---- Explicit derivation for the float's own groups (background wash + per-line
---- accents). The generic global pass covers everything else.
-function T._derive(pal)
-	local base = T._base
-	local light = luminance(base.bg) > 128
-	local primary = adjust(pal.primary, light)
-	local secondary = adjust(pal.secondary, light)
-	local tertiary = adjust(pal.tertiary, light)
-
-	-- Ambient wash of the raw dominant color (Rust: `primary_raw`).
-	local intensity = clamp(T._opts.intensity or 0.2, 0, 0.5)
-	local unified_bg = blend(base.bg, pal.primary, intensity)
-	local border = blend(base.border, primary, 0.55)
-
-	-- Keep the dim foreground readable against the reactive background.
-	local bg_lum = luminance(pal.primary)
-	local target_dim = bg_lum > 128 and (bg_lum - 60) or (bg_lum + 60)
-	local fg_dim = adjust_for_contrast(base.fg_dim, target_dim)
-
-	local derived = {
-		NormalFloat = { fg = base.fg, bg = unified_bg },
-		FloatBorder = { fg = border, bg = unified_bg },
-		FloatTitle = { fg = primary, bg = unified_bg, bold = true },
-		FloatFooter = { fg = fg_dim, bg = unified_bg },
-		GtmIcon = { fg = primary, bg = unified_bg },
-		GtmTitle = { fg = base.fg, bg = unified_bg },
-		GtmArtist = { fg = secondary, bg = unified_bg },
-		GtmAlbum = { fg = tertiary, bg = unified_bg },
-		GtmTime = { fg = secondary, bg = unified_bg },
-		GtmBar = { fg = primary, bg = unified_bg },
-		GtmBarEmpty = { fg = fg_dim, bg = unified_bg },
-		GtmVolume = { fg = fg_dim, bg = unified_bg },
-		GtmHint = { fg = fg_dim, bg = unified_bg },
+--- The float's own groups. `bg[1]` is the ramp's darkest surface, which is
+--- what the float sits on.
+local function float_groups(ctx)
+	local a = ctx.accent
+	return {
+		NormalFloat = { fg = ctx.fg, bg = ctx.bg[2] },
+		FloatBorder = { fg = ctx.line, bg = ctx.bg[2] },
+		WinSeparator = { fg = ctx.line },
+		VertSplit = { fg = ctx.line },
+		FloatTitle = { fg = a.primary, bg = ctx.bg[2], bold = true },
+		FloatFooter = { fg = ctx.fg_dim, bg = ctx.bg[2] },
+		GtmIcon = { fg = a.primary, bg = ctx.bg[2] },
+		GtmBar = { fg = a.primary, bg = ctx.bg[2] },
+		GtmTitle = { fg = ctx.fg, bg = ctx.bg[2] },
+		GtmArtist = { fg = a.secondary, bg = ctx.bg[2] },
+		GtmTime = { fg = a.secondary, bg = ctx.bg[2] },
+		GtmAlbum = { fg = a.tertiary, bg = ctx.bg[2] },
+		GtmBarEmpty = { fg = ctx.fg_dim, bg = ctx.bg[2] },
+		GtmVolume = { fg = ctx.fg_dim, bg = ctx.bg[2] },
+		GtmHint = { fg = ctx.fg_dim, bg = ctx.bg[2] },
 	}
-	for _, name in ipairs(T._opts.extra_groups or {}) do
-		local saved = T._snap[name] or {}
-		derived[name] = { fg = saved.fg, bg = unified_bg }
-	end
-	return derived
 end
 
---- Apply a palette: wash the whole theme and re-tint the accents, then write
---- the float's explicit derivation. Mutates global highlights by design.
+--- Apply a palette: write an explicit value for every non-semantic group.
+---
+--- A group is only written when this module knows what it should be. Leaving an
+--- unrecognised group at its colorscheme value is better than guessing, and it
+--- is why the same palette under two colorschemes yields the same surfaces —
+--- every surface here is computed, none of it inherited.
 function T.apply(pal)
 	if not pal then
 		return
@@ -655,32 +342,65 @@ function T.apply(pal)
 	T._touched = {}
 
 	if (T._opts.scope or "global") == "global" then
-		for name, saved in pairs(T._snap) do
-			if type(saved) == "table" and not saved.link and not saved.reverse and not is_semantic(name) then
-				local bg = color_rgb(saved.bg)
-				local slot = role_for(name)
-				local fg = slot and ctx.slots[slot]
-				if bg or fg then
-					local attrs = vim.deepcopy(saved)
-					if name == "Normal" or name == "NormalNC" then
-						attrs.bg = ctx.unified_bg
-					elseif bg then
-						attrs.bg = blend(bg, ctx.primary_raw, ctx.intensity)
-					end
-					if fg then
-						attrs.fg = fg
-					end
-					set_hl(name, attrs)
-					T._touched[name] = true
-				end
+		for name, saved in pairs(T._snap or {}) do
+			if type(saved) ~= "table" or saved.link or is_semantic(name) then
+				goto continue
 			end
+			local attrs = vim.deepcopy(saved)
+			local slot = role_for(name)
+			-- Background-bearing chrome follows the ramp by name; everything
+			-- else takes the ramp foreground or its accent slot.
+			if name == "Normal" or name == "NormalNC" or name == "TabLineFill" then
+				attrs.bg = ctx.bg[1]
+				attrs.fg = ctx.fg
+			elseif name == "CursorLine" or name == "CursorColumn" or name == "ColorColumn" then
+				attrs.bg = ctx.bg[3]
+			elseif name == "Visual" then
+				attrs.bg = ctx.bg[4]
+			elseif name == "Search" or name == "IncSearch" or name == "CurSearch" then
+				attrs.bg = ctx.sel
+				attrs.fg = ctx.bg[1]
+			elseif name == "Pmenu" or name == "StatusLineNC" or name == "TabLine" or name == "Folded" then
+				attrs.bg = ctx.bg[2]
+				attrs.fg = ctx.fg
+			elseif name == "PmenuSel" or name == "TabLineSel" then
+				attrs.bg = ctx.bg[4]
+				attrs.fg = ctx.fg
+			elseif name == "StatusLine" then
+				attrs.bg = ctx.bg[3]
+				attrs.fg = ctx.fg
+			elseif name == "LineNr" or name == "SignColumn" then
+				attrs.bg = ctx.bg[1]
+				attrs.fg = ctx.fg_dim
+			elseif name == "CursorLineNr" then
+				attrs.bg = ctx.bg[3]
+				attrs.fg = ctx.accent.primary
+			elseif
+				name == "Comment"
+				or name == "NonText"
+				or name == "Whitespace"
+				or name == "SpecialKey"
+			then
+				attrs.fg = ctx.fg_dim
+			elseif slot then
+				attrs.fg = ctx.accent[slot]
+			else
+				attrs.fg = ctx.fg
+			end
+			set_hl(name, attrs)
+			T._touched[name] = true
+			::continue::
 		end
 	end
 
-	local derived = T._derive(pal)
+	local derived = float_groups(ctx)
 	T._derived = derived
 	for name, attrs in pairs(derived) do
 		set_hl(name, attrs)
+		T._touched[name] = true
+	end
+	for _, name in ipairs(T._opts.extra_groups or {}) do
+		set_hl(name, { fg = ctx.fg, bg = ctx.bg[2] })
 		T._touched[name] = true
 	end
 end
@@ -698,17 +418,16 @@ function T.palette_hexes(pal)
 		end
 		return string.format("#%02x%02x%02x", c[1], c[2], c[3])
 	end
-	local res = {
-		primary = hx(pal.primary),
-		secondary = hx(pal.secondary),
-		tertiary = hx(pal.tertiary),
-	}
-	if T._derived then
-		res.bg = hx(T._derived.NormalFloat.bg)
-	else
-		res.bg = "n/a"
+	return { hx(pal.primary), hx(pal.secondary), hx(pal.tertiary) }
+end
+
+--- The colorscheme changed: the semantic groups are now someone else's, so
+--- re-snapshot them and re-apply the palette we are already holding.
+function T.on_colorscheme()
+	T.snapshot()
+	if T._palette and T.is_enabled() then
+		T.apply(T._palette)
 	end
-	return res
 end
 
 return T
