@@ -153,6 +153,14 @@ Neovim (init.lua) ── Unix socket ──► gtmd
 - [Protocol](https://github.com/prjctimg/gtm.spec/blob/main/protocol.md) — IPC protocol reference
 - [Configuration](https://github.com/prjctimg/gtm.spec/blob/main/man/gtm-config.1.md) — daemon configuration
 
+## Contributors
+
+<!-- CONTRIBUTORS -->
+<p align="left">
+  <a href="https://github.com/iseeheaven"><img src="https://github.com/iseeheaven.png?size=80" width="50" height="50" style="border-radius:50%;margin:4px;" alt="iseeheaven"/></a> <a href="https://github.com/prjctimg"><img src="https://github.com/prjctimg.png?size=80" width="50" height="50" style="border-radius:50%;margin:4px;" alt="prjctimg"/></a>
+</p>
+<!-- /CONTRIBUTORS -->
+
 ## License
 
 [GPLv3](https://www.gnu.org/licenses/gpl-3.0) — same as GTM.
