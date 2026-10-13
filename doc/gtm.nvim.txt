@@ -174,23 +174,31 @@ Disable by default; enable with `theme.reactive = true`.
 
 When a track starts playing, the current artwork is downscaled to 24×24
 raw RGB (via ffmpeg, falling back to ImageMagick) and quantized into a
-3-color palette (dominant, secondary, tertiary). The palette drives the
-float's global highlight groups:
+3-color palette (dominant, secondary, tertiary). With the default
+`theme.scope = "global"` the palette re-tints the whole editor:
 
-  - the float background gets an ambient wash of the dominant color at
-    `theme.intensity` (clamped 0..0.5);
-  - text/border accents take the palette hues through a
-    contrast-preserving adjustment;
+  - every surface group's background gets an ambient wash of the dominant
+    color at `theme.intensity` (clamped 0..0.5) — the editor background
+    itself (`Normal`) changes, not just the float;
+  - the standard syntax/UI accent groups (Title, Function, Keyword, Type,
+    String, ...) take the palette hues through a contrast-preserving
+    adjustment; treesitter captures (`@function`, `@string`, ...) resolve
+    to their base group's slot;
   - dim foreground colors are re-tuned for readability against the tint.
 
-The tint is kept while playback is paused and restored exactly — per-group
-`nvim_get_hl {link=true}` snapshots taken at setup — on stop, track
-change, colorscheme swap (`ColorScheme` rebundle), or plugin close
-(`VimLeavePre`). |:Gtm theme status| prints the active palette hexes;
-|:Gtm theme reset| clears the tint immediately.
+Semantic colors are never recolored: groups whose names match the error,
+warning, diff, diagnostic, spell or `Todo` families keep their colors, so
+invalid states stay unambiguous. The float's own groups always receive an
+explicit derivation (background wash + per-line accents).
 
-`theme.extra_groups` accepts additional highlight names to tint alongside
-the float groups.
+Set `theme.scope = "float"` to limit the tint to the float's groups.
+`theme.extra_groups` accepts additional highlight names to tint.
+
+The tint is kept while playback is paused and restored exactly — an
+`nvim_get_hl` snapshot of the groups actually touched, taken at setup — on
+stop, track change, colorscheme swap (`ColorScheme` re-snapshot + re-apply),
+or plugin close (`VimLeavePre`). |:Gtm theme status| prints the active
+palette hexes; |:Gtm theme reset| clears the tint immediately.
 
 ==============================================================================
 10. CONFIG                                                 *gtm.nvim-config*
@@ -207,9 +215,10 @@ the float groups.
       cover_art = true,             -- requires 3rd/image.nvim
     },
     theme = {
-      reactive = false,             -- tint float from album art
+      reactive = false,             -- tint the editor from album art
       intensity = 0.2,              -- background wash strength (0..0.5)
       extra_groups = {},            -- extra highlights to tint
+      scope = "global",             -- "global" (whole editor) | "float"
     },
     keymaps = {
       play_pause = "<leader>gp",

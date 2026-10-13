@@ -28,6 +28,9 @@ local default_opts = {
 		reactive = false,
 		intensity = 0.2,
 		extra_groups = {},
+		-- "global" recolors the whole editor (surfaces + accent roles,
+		-- semantics preserved); "float" tints only the float's groups.
+		scope = "global",
 	},
 	keymaps = {
 		play_pause = "<leader>gp",

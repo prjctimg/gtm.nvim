@@ -3,11 +3,18 @@
 -- gtm.theme: reactive, cover-derived highlight groups
 --
 -- When `theme.reactive` is enabled and a track with artwork is playing, the
--- album art's dominant colors tint **global** highlight groups: the float
--- surface takes a faint wash of the dominant color (`intensity`), while
--- accents (title, progress bar, border) take the palette's primary/secondary/
--- tertiary colors nearly verbatim — a faithful port of the daemon's own
--- reactive pass in `gtm/src/reactive.rs` (extract_palette + derive_theme).
+-- album art's dominant colors tint **global** highlight groups: every surface
+-- group's background takes a faint wash of the dominant color (`intensity`),
+-- while the standard syntax/UI accent groups (Title, Function, Keyword, Type,
+-- String, ...) take the palette's primary/secondary/tertiary colors through a
+-- contrast-preserving adjust — a faithful port of the daemon's own reactive
+-- pass in `gtm/src/reactive.rs` (extract_palette + derive_theme).
+--
+-- Semantics are preserved: error/warning/diff/diagnostic/spell groups (and any
+-- group whose name matches those families) are never recolored, so invalid
+-- states keep their meaning while the rest of the theme reacts to the artwork.
+-- The float's own groups additionally get an explicit derivation (background
+-- wash + per-line accents) so the playback UI stays coherent.
 --
 -- Palette pipeline mirrors the daemon:
 --
@@ -17,18 +24,18 @@
 --   derive()    blend the palette into the colorscheme's float groups
 --
 -- Lifecycle: the tint is applied on track change and **kept while paused**,
--- restored on stop / track change / close. Setup defines the `Gtm*` groups
--- (used by the float's per-line highlights) as links, re-snapshots on
--- `ColorScheme`, and re-derives if a palette is active. Everything mutates
--- global groups by design (user preference); restore is exact via
--- `nvim_get_hl {link=true}` round-trip.
+-- restored on stop / track change / close. Setup snapshots every global
+-- highlight group, and `ColorScheme` re-snapshots the freshly applied scheme
+-- and re-applies any active palette so the tint stays coherent across theme
+-- swaps. Everything mutates global groups by design (user preference); restore
+-- is exact via an `nvim_get_hl` round-trip of the groups actually touched.
 --
 -- This is free software released under the GPL-3.0 license.
 
 local T = {}
 
--- Groups the reactive pass may override. The Gtm* groups are defined at setup
--- (links into colorscheme anchors) and consumed by the float highlights.
+-- Groups the float's explicit derivation always writes. Everything else is
+-- handled by the generic global pass (background wash + accent roles).
 local FLOAT_GROUPS = { "NormalFloat", "FloatBorder", "FloatTitle", "FloatFooter" }
 
 local GTM_GROUPS = {
@@ -57,14 +64,83 @@ local BASE_LINKS = {
 	GtmHint = "Comment",
 }
 
+-- Groups whose fg is an accent colour and therefore takes one palette slot.
+-- Mirrors the daemon's accent / secondary_accent / tertiary_accent semantic
+-- slots so the recolor is coherent and predictable rather than a blind
+-- hue-rotate. Groups absent from the active scheme are simply skipped.
+local ROLE_PRIMARY = {
+	"Title",
+	"FloatTitle",
+	"Directory",
+	"Special",
+	"SpecialKey",
+	"Tag",
+	"Question",
+	"MoreMsg",
+	"ModeMsg",
+	"Function",
+	"Identifier",
+	"Statement",
+	"Conditional",
+	"Repeat",
+	"Keyword",
+	"Operator",
+	"Exception",
+	"Label",
+}
+local ROLE_SECONDARY = {
+	"String",
+	"Character",
+	"Constant",
+	"Number",
+	"Boolean",
+	"Float",
+}
+local ROLE_TERTIARY = {
+	"Type",
+	"Typedef",
+	"Structure",
+	"StorageClass",
+	"PreProc",
+	"Include",
+	"Define",
+	"Macro",
+	"PreCondit",
+}
+
+-- Name substrings that mark a group as semantic. Such groups keep both their
+-- foreground and background so invalid states stay unambiguous.
+local SEMANTIC_SUBSTRINGS = {
+	"Error",
+	"error",
+	"Warn",
+	"warn",
+	"Diff",
+	"diff",
+	"Diagnostic",
+	"LspDiagnostics",
+	"Spell",
+	"spell",
+	"health",
+	"Health",
+	"GitSigns",
+	"GitGutter",
+	"Added",
+	"Removed",
+	"Changed",
+	"Todo",
+}
+
 local WHITE = { 255, 255, 255 }
 local BLACK = { 0, 0, 0 }
 
-T._opts = { reactive = false, intensity = 0.2, extra_groups = {} }
+T._opts = { reactive = false, intensity = 0.2, extra_groups = {}, scope = "global" }
 T._snap = {}
 T._base = nil
 T._palette = nil
 T._derived = nil
+T._ctx = nil
+T._touched = {}
 
 -- ============================================================================
 -- Color math (ports of gtm/src/reactive.rs)
@@ -324,7 +400,7 @@ end
 -- Highlight group management
 -- ============================================================================
 
---- 24-bit int -> {r,g,b} with graceful fallbacks.
+--- 24-bit int -> {r,g,b} with graceful fallbacks (base colors).
 local function to_rgb(v, ...)
 	if type(v) == "number" then
 		return { math.floor(v / 65536), math.floor(v / 256) % 256, v % 256 }
@@ -338,6 +414,79 @@ local function to_rgb(v, ...)
 		end
 	end
 	return { 30, 30, 30 }
+end
+
+--- A highlight attribute colour (24-bit int or "#rrggbb") -> {r,g,b}, or nil.
+local function color_rgb(v)
+	if type(v) == "number" then
+		return { math.floor(v / 65536), math.floor(v / 256) % 256, v % 256 }
+	end
+	if type(v) == "string" then
+		local hex = v:match("^#(%x%x%x%x%x%x)$")
+		if hex then
+			return {
+				tonumber(hex:sub(1, 2), 16),
+				tonumber(hex:sub(3, 4), 16),
+				tonumber(hex:sub(5, 6), 16),
+			}
+		end
+	end
+	return nil
+end
+
+--- Tuples → "#rrggbb"; pass through anything nvim_set_hl accepts natively.
+local function cstr(c)
+	if type(c) == "table" then
+		return string.format("#%02x%02x%02x", c[1], c[2], c[3])
+	end
+	return c
+end
+
+--- Set a group exactly (no merge), normalizing colour tuples to hex.
+local function set_hl(name, attrs)
+	local hl = vim.deepcopy(attrs)
+	for _, k in ipairs({ "fg", "bg", "sp" }) do
+		if hl[k] ~= nil then
+			hl[k] = cstr(hl[k])
+		end
+	end
+	vim.api.nvim_set_hl(0, name, hl)
+end
+
+--- Whether a group name belongs to a semantic family that must not react.
+local function is_semantic(name)
+	for _, s in ipairs(SEMANTIC_SUBSTRINGS) do
+		if name:find(s, 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
+local ROLE = {}
+for _, n in ipairs(ROLE_PRIMARY) do
+	ROLE[n] = "primary"
+end
+for _, n in ipairs(ROLE_SECONDARY) do
+	ROLE[n] = "secondary"
+end
+for _, n in ipairs(ROLE_TERTIARY) do
+	ROLE[n] = "tertiary"
+end
+
+--- Resolve a group name to a palette slot. Handles treesitter captures by
+--- falling back to their base name (`@function.builtin` -> `Function`).
+local function role_for(name)
+	local r = ROLE[name]
+	if r then
+		return r
+	end
+	local base = name:match("^@([%w_]+)")
+	if base then
+		local cap = base:sub(1, 1):upper() .. base:sub(2)
+		return ROLE[cap]
+	end
+	return nil
 end
 
 local ALL_GROUPS = nil
@@ -358,17 +507,10 @@ function T._define_links()
 	end
 end
 
---- Snapshot every overridable group (with link info) plus the base colors
---- used by derive(). Called on setup and on every ColorScheme.
+--- Snapshot every globally defined highlight group (with link info) plus the
+--- base colors used by derive(). Called on setup and on every ColorScheme.
 function T.snapshot()
-	local groups = {}
-	local extra = T._opts.extra_groups or {}
-	vim.list_extend(groups, FLOAT_GROUPS)
-	vim.list_extend(groups, GTM_GROUPS)
-	vim.list_extend(groups, extra)
-	for _, name in ipairs(groups) do
-		T._snap[name] = vim.api.nvim_get_hl(0, { name = name, link = true })
-	end
+	T._snap = vim.api.nvim_get_hl(0, {})
 
 	local nf = vim.api.nvim_get_hl(0, { name = "NormalFloat" })
 	local normal = vim.api.nvim_get_hl(0, { name = "Normal" })
@@ -382,13 +524,20 @@ function T.snapshot()
 	}
 end
 
---- Restore every overridden group to its snapshot (removes the tint).
+--- Restore every touched group to its snapshot (removes the tint).
 function T.restore()
-	for name, saved in pairs(T._snap) do
-		vim.api.nvim_set_hl(0, name, saved)
+	for name in pairs(T._touched or {}) do
+		local saved = T._snap[name]
+		if saved then
+			set_hl(name, saved)
+		else
+			vim.api.nvim_set_hl(0, name, {})
+		end
 	end
+	T._touched = {}
 	T._palette = nil
 	T._derived = nil
+	T._ctx = nil
 end
 
 function T.is_active()
@@ -412,7 +561,9 @@ function T.setup(opts)
 end
 
 --- Re-establish links + fresh snapshot after a colorscheme swap, and re-apply
---- the active palette so the tint survives theme changes.
+--- the active palette so the tint survives theme changes. Colorschemes reset
+--- highlights with `hi clear`, so the snapshot taken here is the new scheme's
+--- own base state, not a tinted pass.
 function T.rebundle()
 	T._define_links()
 	T.snapshot()
@@ -421,7 +572,38 @@ function T.rebundle()
 	end
 end
 
---- Derive per-group attrs from a palette + the snapshotted base colors.
+--- Derive the palette context (adjusted accents + reactive surfaces).
+local function derive_ctx(pal)
+	local base = T._base
+	local light = luminance(base.bg) > 128
+	local primary = adjust(pal.primary, light)
+	local secondary = adjust(pal.secondary, light)
+	local tertiary = adjust(pal.tertiary, light)
+
+	local intensity = clamp(T._opts.intensity or 0.2, 0, 0.5)
+	local unified_bg = blend(base.bg, pal.primary, intensity)
+	local border = blend(base.border, primary, 0.55)
+
+	local bg_lum = luminance(pal.primary)
+	local target_dim = bg_lum > 128 and (bg_lum - 60) or (bg_lum + 60)
+	local fg_dim = adjust_for_contrast(base.fg_dim, target_dim)
+
+	return {
+		light = light,
+		primary = primary,
+		secondary = secondary,
+		tertiary = tertiary,
+		primary_raw = pal.primary,
+		intensity = intensity,
+		unified_bg = unified_bg,
+		border = border,
+		fg_dim = fg_dim,
+		slots = { primary = primary, secondary = secondary, tertiary = tertiary },
+	}
+end
+
+--- Explicit derivation for the float's own groups (background wash + per-line
+--- accents). The generic global pass covers everything else.
 function T._derive(pal)
 	local base = T._base
 	local light = luminance(base.bg) > 128
@@ -461,34 +643,45 @@ function T._derive(pal)
 	return derived
 end
 
---- Tuples → "#rrggbb"; pass through anything nvim_set_hl accepts natively.
-local function cstr(c)
-	if type(c) == "table" then
-		return string.format("#%02x%02x%02x", c[1], c[2], c[3])
-	end
-	return c
-end
-
---- Apply a palette: derive and set every group, mutating global highlights.
+--- Apply a palette: wash the whole theme and re-tint the accents, then write
+--- the float's explicit derivation. Mutates global highlights by design.
 function T.apply(pal)
 	if not pal then
 		return
 	end
-	local derived = T._derive(pal)
+	local ctx = derive_ctx(pal)
 	T._palette = pal
+	T._ctx = ctx
+	T._touched = {}
+
+	if (T._opts.scope or "global") == "global" then
+		for name, saved in pairs(T._snap) do
+			if type(saved) == "table" and not saved.link and not saved.reverse and not is_semantic(name) then
+				local bg = color_rgb(saved.bg)
+				local slot = role_for(name)
+				local fg = slot and ctx.slots[slot]
+				if bg or fg then
+					local attrs = vim.deepcopy(saved)
+					if name == "Normal" or name == "NormalNC" then
+						attrs.bg = ctx.unified_bg
+					elseif bg then
+						attrs.bg = blend(bg, ctx.primary_raw, ctx.intensity)
+					end
+					if fg then
+						attrs.fg = fg
+					end
+					set_hl(name, attrs)
+					T._touched[name] = true
+				end
+			end
+		end
+	end
+
+	local derived = T._derive(pal)
 	T._derived = derived
 	for name, attrs in pairs(derived) do
-		local hl = {}
-		if attrs.fg then
-			hl.fg = cstr(attrs.fg)
-		end
-		if attrs.bg then
-			hl.bg = cstr(attrs.bg)
-		end
-		if attrs.bold then
-			hl.bold = true
-		end
-		vim.api.nvim_set_hl(0, name, hl)
+		set_hl(name, attrs)
+		T._touched[name] = true
 	end
 end
 

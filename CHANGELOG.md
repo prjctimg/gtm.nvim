@@ -14,6 +14,15 @@ This is free software released under the GPL-3.0 license.
 
 ### Fixed
 
+- Reactive theming now recolors the **whole editor**, not just the float.
+  Previously only `NormalFloat`/`FloatBorder`/`FloatTitle`/`FloatFooter`
+  and the `Gtm*` groups were derived from the album palette, so the active
+  colorscheme never appeared to react. `theme.scope` (default `"global"`)
+  now snapshot-washes every surface group's background and re-tints the
+  standard syntax/UI accent groups, and `ColorScheme` re-snapshots the new
+  scheme before re-applying — so the tint is persistent across theme swaps
+  instead of being lost when `Normal` itself was never touched.
+
 - `I.setup()` is now idempotent: repeated calls (config reload, or the
   loader's default auto-setup racing a host's explicit `setup(opts)`) only
   re-apply options instead of duplicating commands, keymaps, autocmds,
@@ -47,6 +56,8 @@ This is free software released under the GPL-3.0 license.
   and clearable via `:Gtm theme reset`.
 - `theme.extra_groups` option to tint extra highlight names alongside the
   float groups.
+- `theme.scope` option (`"global"` | `"float"`) to choose between
+  whole-editor reactive theming and float-only tinting.
 
 ### Changed
 

@@ -31,10 +31,11 @@ Neovim plugin for the GTM terminal music player. Controls playback, library, and
       border = "rounded",
       cover_art = true, -- requires 3rd/image.nvim
     },
-    -- tint the float's highlights (and its background) from the album art
+    -- tint the whole editor (surfaces + accents) from the album art
     theme = {
       reactive = true, -- default false
       intensity = 0.2, -- 0..0.5 background wash strength
+      scope = "global", -- "global" (whole editor) | "float"
     },
     keymaps = {
       play_pause = "<leader>gp",
@@ -83,13 +84,29 @@ falls back to a `♪` placeholder.
 
 When `opts.theme.reactive = true`, the plugin derives a 3-color palette from
 the current album art (downscaled to 24×24 raw RGB via ffmpeg or
-ImageMagick) and re-tints the float's highlight groups — background gets an
-ambient wash of the dominant color at `opts.theme.intensity`, while
-text/border accents take the palette hues using a contrast-preserving
-adjust. The tint stays applied while playback is paused and is restored
-exactly (per-group `nvim_get_hl {link=true}` snapshots) on stop, track
-change, colorscheme swap, or plugin close. `:Gtm theme status` prints the
-active palette hexes; `:Gtm theme reset` clears the tint.
+ImageMagick) and re-tints the editor:
+
+- every surface group's background takes an ambient wash of the dominant
+  color at `opts.theme.intensity` (clamped 0..0.5), so the whole scheme —
+  not just the float — reacts to the artwork;
+- the standard syntax/UI accent groups (`Title`, `Function`, `Keyword`,
+  `Type`, `String`, ...) take the palette's primary/secondary/tertiary
+  colors through a contrast-preserving adjust;
+- dim foreground colors are re-tuned for readability against the tint.
+
+Semantic colors are deliberately left untouched: error, warning, diff,
+diagnostic, spell and `Todo` groups keep their meaning. The float's own
+groups additionally receive an explicit derivation (background wash +
+per-line accents).
+
+Set `opts.theme.scope = "float"` to limit the tint to the float's groups.
+`opts.theme.extra_groups` accepts additional highlight names to tint.
+
+The tint stays applied while playback is paused and is restored exactly
+(per-group `nvim_get_hl` snapshots of the groups actually touched) on stop,
+track change, colorscheme swap (`ColorScheme` rebundle), or plugin close.
+`:Gtm theme status` prints the active palette hexes; `:Gtm theme reset`
+clears the tint.
 
 ## Statusline
 
