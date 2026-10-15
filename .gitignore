@@ -1,0 +1,3 @@
+# Local agent tooling state — kept on disk, not in the repo.
+.entire/
+.opencode/

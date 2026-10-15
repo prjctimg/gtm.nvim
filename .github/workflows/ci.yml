@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Neovim
+        uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: v0.11.4
+
+      - name: Syntax check
+        run: |
+          for f in $(find lua plugin scripts -name '*.lua'); do
+            luac -p "$f" || { echo "syntax error in $f"; exit 1; }
+          done
+
+      - name: Headless smoke test
+        run: nvim --headless -l scripts/smoke.lua
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: leafo/gh-actions-lua@v10
+        with:
+          luaVersion: "5.1"
+
+      - uses: lunarmodules/luacheck@v1

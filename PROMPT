@@ -1,2 +1,0 @@
-- Allow the plugin to render cover art's via image.nvim
-- Add support for reactive themeing when playback is active by changing the background color and highlight patterns based on the current theme. Would it be wiser to have the daemon send the theme object or do it from Lua in Neovim ? Which is cheaper and has less scope creep ?

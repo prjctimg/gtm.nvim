@@ -5,12 +5,68 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Copyright (c) 2025 - present
+Copyright (c) 2026 - present
 Author: prjctimg <prjctimg@outlook.com>
 
 This is free software released under the GPL-3.0 license.
 
 ## [Unreleased]
+
+### Removed
+
+- **Breaking.** The feature set is reduced to playback control, statusline
+  integration and reactive theming. Everything else was a reimplementation of
+  the `gtm` TUI and has been removed rather than maintained:
+
+  | Removed | Replacement |
+  |---------|-------------|
+  | Floating window (`:Gtm float`, `<Leader>gf`) | The `gtm` TUI |
+  | Cover art rendering (`3rd/image.nvim`) | The TUI; the daemon still extracts the palette for theming |
+  | Library browser (`:Gtm library`, `:Gtm playlists`, `:Gtm scan`) | The TUI |
+  | YouTube search / download (`:Gtm yt`) | The TUI |
+  | Equalizer control (`:Gtm eq`) | The TUI |
+  | Favourites, queue and playlist commands | The TUI |
+
+  The plugin is now ~976 lines of code, down from ~1327.
+
+- `opts.float` (width, height, border, cover_art) and `opts.keymaps.float`.
+- `opts.theme.scope` — with no float left, the tint is always global.
+- `opts.theme.intensity` — it was declared in the defaults and never read by
+  the theme module; the ramp's saturation is derived from the palette.
+- Daemon auto-start. `gtm.nvim` used to spawn `gtmd` when no socket was found.
+  A plugin silently starting a server process is not its call to make, so it now
+  notifies instead. Start `gtmd` yourself.
+
+### Added
+
+- `:checkhealth gtm`, covering requirements, both socket connections and
+  heartbeat freshness, status snapshot staleness, and whether a palette is
+  actually flowing — the usual answers to "why is nothing happening".
+- `LICENSE`, `CONTRIBUTING.md` and `CODE_OF_CONDUCT.md`, matching GTM's.
+- `:Gtm disconnect` and `require("gtm").cycle_repeat()`, `set_volume()`,
+  `statusline()`, `lualine_component()`, `reset_theme()` as Lua API.
+
+### Changed
+
+- The hand-rolled MessagePack decoder (`gtm/msgpack.lua`, 475 lines) and the
+  separate event layer (`gtm/events.lua`) are merged into `gtm/pulse.lua`.
+  Frames are still peeked by tag and unrecognised ones dropped without being
+  decoded, so 60 Hz telemetry costs nothing — but the frames that *are* wanted
+  are now decoded by `vim.mpack`, which ships with Neovim.
+- `theme.extra_groups` now tints groups in the global scope only.
+
+### Fixed
+
+- **Reactive theming never actually worked.** `theme.snapshot()` called
+  `vim.api.nvim_get_names()`, which is not a Neovim API, and the derived
+  ramp passed `{r, g, b}` tables to `nvim_set_hl`, which requires a `0xRRGGBB`
+  integer. The palette path raised on every event before it could tint
+  anything. Highlight groups are now enumerated with
+  `vim.fn.getcompletion("", "highlight")` and colours are converted with
+  `as_int()`.
+- `theme.is_enabled()` returned true for `setup({})` and only for
+  `opts.reactive == false` otherwise, so the documented default (off) and the
+  actual behaviour disagreed. It now reads `opts.reactive == true`.
 
 ### Fixed
 

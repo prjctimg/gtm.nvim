@@ -1,35 +1,24 @@
+-- Copyright (c) 2026 - present
+-- Author: prjctimg <prjctimg@outlook.com>
+-- lazy.nvim spec. Defaults mirror gtm/init.lua; anything omitted here falls
+-- back to the values the plugin ships with.
+--
+-- This is free software released under the GPL-3.0 license.
+
 return {
 	"prjctimg/gtm.nvim",
-	dependencies = {
-		-- Optional: cover art rendering in the float window. gtm.nvim works
-		-- without it; only the artwork panel is skipped.
-		{ "3rd/image.nvim", optional = true },
-	},
 	event = "VeryLazy",
-	cmd = { "Gtm" },
+	cmd = "Gtm",
 	opts = {
-		socket_path = nil,
-		statusline_format = "compact",
+		statusline_format = "compact", -- "compact" | "detailed"
 		resync_interval = 30000,
-		float = {
-			width = 0.8,
-			height = 0.8,
-			border = "rounded",
-			cover_art = true, -- requires 3rd/image.nvim
-		},
-		-- Reactive theming: tint layout highlights from the album art.
-		theme = {
-			reactive = false,
-			intensity = 0.2,
-			extra_groups = {},
-		},
+		theme = { reactive = false, extra_groups = {} },
 		keymaps = {
 			play_pause = "<leader>gp",
 			next = "<leader>gn",
 			prev = "<leader>gN",
 			volume_up = "<leader>g>",
 			volume_down = "<leader>g<",
-			float = "<leader>gf",
 			stop = "<leader>gS",
 		},
 	},

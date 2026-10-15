@@ -1,224 +1,141 @@
-*gtm.nvim.txt*  Neovim plugin for GTM terminal music player
+*gtm.nvim.txt*	Neovim plugin for the GTM terminal music player
 
 Author:  prjctimg
-License: GPLv3
+License: GPL-3.0
 
 ==============================================================================
-CONTENTS                                                    *gtm.nvim-contents*
+CONTENTS					*gtm.nvim-contents*
 
-  1. Setup .............. |gtm.nvim-setup|
-  2. Commands ........... |gtm.nvim-commands|
-  3. Library ............ |gtm.nvim-library|
-  4. Equalizer .......... |gtm.nvim-equalizer|
-  5. YouTube ............ |gtm.nvim-youtube|
-  6. Statusline ......... |gtm.nvim-statusline|
-  7. Float .............. |gtm.nvim-float|
-  8. Cover art .......... |gtm.nvim-cover|
-  9. Reactive theming ... |gtm.nvim-theme|
-  10. Config ............. |gtm.nvim-config|
+  1. Setup ..................... |gtm.nvim-setup|
+  2. Commands .................. |gtm.nvim-commands|
+  3. Statusline ................ |gtm.nvim-statusline|
+  4. Reactive theming .......... |gtm.nvim-theme|
+  5. Lua API ................... |gtm.nvim-api|
+  6. Configuration ............. |gtm.nvim-config|
+  7. Health .................... |gtm.nvim-health|
 
 ==============================================================================
-1. SETUP                                                      *gtm.nvim-setup*
+1. SETUP						*gtm.nvim-setup*
 
-Requires GTM daemon (gtmd) running on the same machine.
+gtm.nvim is three things: playback control, a statusline, and reactive theming
+driven by the album art gtmd already extracted. It opens no windows of its own.
 
-With lazy.nvim: >
+Requires Neovim 0.11+ and a running `gtmd` (https://github.com/prjctimg/gtm).
+
+lazy.nvim: >
   { "prjctimg/gtm.nvim", opts = {} }
 <
 Manual: >
   require("gtm").setup({ statusline_format = "compact" })
 <
+There are no dependencies, optional or otherwise. `setup()` is idempotent: it
+can be called repeatedly (config reload, or alongside a plugin manager) without
+duplicating sockets, event handlers or commands.
+
 ==============================================================================
-2. COMMANDS                                                *gtm.nvim-commands*
+2. COMMANDS					*gtm.nvim-commands*
 
 Playback:~
-  :Gtm float          Toggle the GTM floating window.
-  :Gtm play           Toggle play/pause.
-  :Gtm next           Skip to next track.
-  :Gtm prev           Skip to previous track.
-  :Gtm stop           Stop playback.
-  :Gtm volup          Increase volume by 5%.
-  :Gtm voldown        Decrease volume by 5%.
-  :Gtm shuffle        Toggle shuffle.
-  :Gtm repeat {mode}  Set repeat mode: off|one|all.
-  :Gtm mute           Toggle mute.
-  :Gtm seek {secs}    Seek to position in seconds.
-  :Gtm status         Show current track in a notification.
-  :Gtm theme {status|reset}
-                      Print the active reactive-theme palette hexes, or
-                      clear the tint.
-  :Gtm disconnect     Disconnect from the daemon socket.
+  :Gtm play              Toggle play/pause.
+  :Gtm next              Skip to next track.
+  :Gtm prev              Skip to previous track.
+  :Gtm stop              Stop playback.
+  :Gtm volup             Increase volume by 5%.
+  :Gtm voldown           Decrease volume by 5%.
+  :Gtm mute              Toggle mute.
+  :Gtm seek {secs}       Seek to position in seconds.
+  :Gtm shuffle           Toggle shuffle.
+  :Gtm repeat {mode}     Set repeat mode: off|one|all.
 
-Library:~
-  :Gtm library        Open the library track list.
-  :Gtm playlists      Open the playlist list.
-  :Gtm scan {path}    Scan a directory and add tracks to library.
+Status:~
+  :Gtm status            Notify what is playing right now.
 
-Library motions (inside library buffer):~
-  j / <Down>          Move cursor down
-  k / <Up>            Move cursor up
-  gg                  Jump to first track
-  G                   Jump to last track
-  <CR>                Play selected track
-  d                   Delete track from library
-  a                   Add track to queue
-  F                   Toggle favourite on selected track
-  t                   Switch to playlist view
-  /                   Filter/search library
-  q / <Esc>           Close library window
+Reactive theming: >
+  :Gtm theme             Print the active palette as hex values.
+  :Gtm theme reset       Clear the tint and restore the previous colors.
+<
+Connection:~
+  :Gtm disconnect        Drop both sockets and stop reconnecting.
 
-Equalizer:~
-  :Gtm eq on          Enable equalizer.
-  :Gtm eq off         Disable equalizer.
-  :Gtm eq {preset}    Set EQ preset: flat|pop|rock|jazz|classical|bass|
-                      vocal|electronic|hip_hop|latin|acoustic|podcast|
-                      dance|headphones|speaker
-
-YouTube:~
-  :Gtm yt             Search YouTube (prompts for query).
-  :Gtm yt {query}     Search YouTube for query.
-  :Gtm yt download    Download a track (prompts for URL/search).
-  :Gtm yt download {url}  Download from URL or search query.
-
-==============================================================================
-3. LIBRARY                                                  *gtm.nvim-library*
-
-The library window shows all tracks in the GTM daemon's library.
-Use |j|/|k| to navigate, |<CR>| to play, |d| to delete, |a| to add
-to queue, |F| to toggle favourite, |/| to filter, |t| for playlists.
-
-Library commands connect to the daemon via IPC and query the track
-database. Use |:Gtm scan| to add new directories.
-
-==============================================================================
-4. EQUALIZER                                              *gtm.nvim-equalizer*
-
-15-band ISO 1/3-octave EQ with presets:
-  flat, pop, rock, jazz, classical, bass, vocal, electronic,
-  hip_hop, latin, acoustic, podcast, dance, headphones, speaker
-
-Gains are capped at +/-5 dB. Q value: 1.414 (1/3-octave bandwidth).
-
-Note: The EQ DSP is not yet implemented in the daemon — only the
-preset switching and IPC plumbing are functional.
-
-==============================================================================
-5. YOUTUBE                                                  *gtm.nvim-youtube*
-
-Search YouTube via yt-dlp and download audio tracks directly.
-
-Flow:
-  1. :Gtm yt {query} starts a search
-  2. Results appear in a floating picker buffer
-  3. Press <CR> on a result to download it
-  4. The track is downloaded as MP3 to ~/.local/share/gtm/audio/
-  5. Library is automatically rescanned after download
-
-Direct download: >
-  :Gtm yt download https://youtube.com/watch?v=...
+Default keymaps, all remappable through `opts.keymaps`: >
+  <Leader>gp             Play / pause
+  <Leader>gn             Next track
+  <Leader>gN             Previous track
+  <Leader>g>             Volume up
+  <Leader>g<             Volume down
+  <Leader>gS             Stop
 <
 ==============================================================================
-6. STATUSLINE                                          *gtm.nvim-statusline*
+3. STATUSLINE					*gtm.nvim-statusline*
 
-Two formats are available:
-  - "compact": `Artist - Title [▶] vol:80% ━━━━━━`
-  - "detailed": `▶ Artist / Title (Album) [01:23/04:56] vol:80%`
-
-lualine integration: >
+lualine: >
   require("lualine").setup({
-    sections = {
-      lualine_x = { require("gtm").lualine_component() },
-    },
+    sections = { lualine_x = { require("gtm").lualine_component() } },
   })
 <
-==============================================================================
-7. FLOAT                                                    *gtm.nvim-float*
-
-Native floating-window playback UI. Layout:
-
-  ┌─────────────────────────────────┬─────────────────────────────────┐
-  │             cover art           │  ▶ Title                        │
-  │        (image.nvim, left panel) │     Artist                     │
-  │                                 │     Album                      │
-  │                                 │   [01:23/04:56] ━━━━━━━━━━━━   │
-  └─────────────────────────────────┴─────────────────────────────────┘
-
-The cover panel is rendered with |3rd/image.nvim| when installed; without
-it the artwork area collapses and a ♪ placeholder is drawn. The text panel
-uses per-line |nvim_buf_add_highlight| records (`GtmIcon`, `GtmTitle`,
-`GtmArtist`, `GtmAlbum`, `GtmTime`, `GtmBar`, `GtmBarEmpty`) plus the
-`NormalFloat`/`FloatBorder`/`FloatTitle`/`FloatFooter` groups, so the whole
-float honors the reactive theme (|gtm.nvim-theme|) automatically.
-
-Toggle with |:Gtm float| or the mapped key; resize with |VimResized|.
+Anything else: >
+  vim.o.statusline = "%{%v:lua.require'gtm'.statusline()%}"
+<
+`opts.statusline_format` picks the rendering: >
+  "compact"   artist - title ▶ vol:80% ━━━━━━━━━━━━━━━━━━━━
+  "detailed"  ▶ Artist - Title (Album) [01:23/04:56] vol:80% [R] [S]
+<
+The component hides itself while the daemon is unreachable. The position clock
+advances locally between daemon events, so the progress bar never waits on the
+socket.
 
 ==============================================================================
-8. COVER ART                                               *gtm.nvim-cover*
+4. REACTIVE THEMING					*gtm.nvim-theme*
 
-Artwork resolution is daemon-first: the plugin sends |get_cover_art| on
-the command socket, decodes the base64 payload, sniffs its file signature
-(JPEG/PNG/WebP/...) and caches it under `stdpath("cache")/gtm/cover`
-keyed by track hash. `fetch()` resolution order:
+With `opts.theme.reactive = true` the editor takes on the colours of the album
+currently playing. gtmd extracts the palette from the cover art and broadcasts
+it; this plugin never decodes an image.
 
-  1. plugin cache (hash-derived key)
-  2. daemon `get_cover_art` payload
-  3. `track.cover_path` / `cover.jpg`-style sidecars next to the audio file
+  - The tint is kept while playback is paused and dropped only when playback
+    stops or the track ends.
+  - Semantic groups (Error, Warning, Diff, Spell, Todo, diagnostics, gitSigns)
+    keep their colorscheme colours.
+  - Changing colorscheme mid-track re-tints rather than losing the palette.
+  - A track with no cover art never tints.
+  - `:Gtm theme reset` restores every group to exactly its prior value.
 
-The cache is deliberately separate from the daemon's own cover cache; the
-plugin's `cleanup()` never touches the daemon's directory.
-
-==============================================================================
-9. REACTIVE THEMING                                         *gtm.nvim-theme*
-
-Disable by default; enable with `theme.reactive = true`.
-
-When a track starts playing, the current artwork is downscaled to 24×24
-raw RGB (via ffmpeg, falling back to ImageMagick) and quantized into a
-3-color palette (dominant, secondary, tertiary). With the default
-`theme.scope = "global"` the palette re-tints the whole editor:
-
-  - every surface group's background gets an ambient wash of the dominant
-    color at `theme.intensity` (clamped 0..0.5) — the editor background
-    itself (`Normal`) changes, not just the float;
-  - the standard syntax/UI accent groups (Title, Function, Keyword, Type,
-    String, ...) take the palette hues through a contrast-preserving
-    adjustment; treesitter captures (`@function`, `@string`, ...) resolve
-    to their base group's slot;
-  - dim foreground colors are re-tuned for readability against the tint.
-
-Semantic colors are never recolored: groups whose names match the error,
-warning, diff, diagnostic, spell or `Todo` families keep their colors, so
-invalid states stay unambiguous. The float's own groups always receive an
-explicit derivation (background wash + per-line accents).
-
-Set `theme.scope = "float"` to limit the tint to the float's groups.
-`theme.extra_groups` accepts additional highlight names to tint.
-
-The tint is kept while playback is paused and restored exactly — an
-`nvim_get_hl` snapshot of the groups actually touched, taken at setup — on
-stop, track change, colorscheme swap (`ColorScheme` re-snapshot + re-apply),
-or plugin close (`VimLeavePre`). |:Gtm theme status| prints the active
-palette hexes; |:Gtm theme reset| clears the tint immediately.
+Add your own groups to the tint with `opts.theme.extra_groups`.
 
 ==============================================================================
-10. CONFIG                                                 *gtm.nvim-config*
+5. LUA API						*gtm.nvim-api*
 
->lua
-  require("gtm").setup({
-    socket_path = nil,              -- auto-detect
-    statusline_format = "compact",  -- "compact" | "detailed"
-    resync_interval = 30000,        -- get_status_lite resync (ms)
-    float = {
-      width = 0.8,
-      height = 0.8,
-      border = "rounded",
-      cover_art = true,             -- requires 3rd/image.nvim
-    },
+Playback~
+  require("gtm").play_pause()      Toggle play/pause.
+  require("gtm").next()            Next track.
+  require("gtm").prev()            Previous track.
+  require("gtm").stop()            Stop.
+  require("gtm").mute()            Toggle mute.
+  require("gtm").shuffle()         Toggle shuffle.
+  require("gtm").cycle_repeat(m)   Set repeat: "off"|"one"|"all".
+  require("gtm").seek(secs)        Seek to a position in seconds.
+  require("gtm").set_volume(d)     Nudge the volume by a delta.
+
+Statusline~
+  require("gtm").statusline()        Render using the configured format.
+  require("gtm").lualine_component()  lualine component table.
+
+Theming~
+  require("gtm").reset_theme()     Clear the reactive tint.
+
+Note: `repeat` is a Lua keyword, so the public entry point is
+`cycle_repeat()`, not `repeat()`.
+
+==============================================================================
+6. CONFIGURATION					*gtm.nvim-config*
+
+Defaults: >
+  {
+    socket_path = nil,       -- default: auto-resolved like gtmd does
+    statusline_format = "compact",
+    resync_interval = 30000, -- ms between get_status_lite resyncs
     theme = {
-      reactive = false,             -- tint the editor from album art
-      intensity = 0.2,              -- background wash strength (0..0.5)
-      extra_groups = {},            -- extra highlights to tint
-      scope = "global",             -- "global" (whole editor) | "float"
+      reactive = false,
+      extra_groups = {},
     },
     keymaps = {
       play_pause = "<leader>gp",
@@ -226,10 +143,24 @@ palette hexes; |:Gtm theme reset| clears the tint immediately.
       prev = "<leader>gN",
       volume_up = "<leader>g>",
       volume_down = "<leader>g<",
-      float = "<leader>gf",
       stop = "<leader>gS",
     },
-  })
+  }
 <
+`socket_path` overrides the socket search order, which otherwise matches
+gtmd's own: `$XDG_RUNTIME_DIR/gtm/gtmd.sock`, `/tmp/gtm-$USER/gtm/gtmd.sock`,
+`$TMPDIR/gtm/gtmd.sock`, then `~/.gtm/gtm/gtmd.sock`. The plugin does not start
+the daemon for you.
 
- vim:tw=78:ts=8:ft=help:norl:
+==============================================================================
+7. HEALTH						*gtm.nvim-health*
+
+>
+  :checkhealth gtm
+<
+Reports the Neovim version, whether `gtmd` is on `$PATH`, both socket paths and
+whether they are connected, the age of the last pulse heartbeat and of the last
+status snapshot, and whether a palette has arrived. Start here when nothing is
+happening.
+
+ vim:tw=78:ts=8:noet:ft=help:norl:
