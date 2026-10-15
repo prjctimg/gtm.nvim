@@ -38,9 +38,24 @@ Two Unix sockets to gtmd, both non-blocking via `vim.uv`:
 | `lua/gtm/init.lua` | Public API, `:Gtm`, keymaps, setup, statusline rendering |
 | `lua/gtm/ipc.lua` | `gtmd.sock` — newline JSON, request/response by `id`, reconnect with backoff, status snapshot |
 | `lua/gtm/pulse.lua` | `gtmd.pulse` — length-prefixed MessagePack; peeks the tag, drops telemetry, decodes the rest with `vim.mpack` |
-| `lua/gtm/theme.lua` | Palette → highlight ramp; snapshots every group and restores on stop |
+| `lua/gtm/theme.lua` | Applies resolved colour roles; snapshots every group and restores on stop |
 | `lua/gtm/health.lua` | `:checkhealth gtm` |
 
 The pulse stream is the source of truth for state changes. Position is
 extrapolated locally between events; the `get_status_lite` resync is only a
 floor under drift the plugin never heard about.
+
+## Colour ownership
+
+gtmd resolves the reactive colours, not the plugin. The plan is
+`REACTIVE_TOKENS.md` in the [gtm](https://github.com/prjctimg/gtm) repo: a
+`reactive_theme` event carrying a resolved role→colour set for both polarities,
+so this plugin, the TUI and future clients agree.
+
+`theme.lua` holds no arithmetic on the daemon path — only a name→role table.
+The local derivation in the same file is a **fallback** for daemons predating
+the event, emits identical role names so `apply` has one path, and is planned
+for deletion once the event is widely deployed. Do not add maths to it.
+
+A role set missing any role in `NEED` is ignored outright: a half-applied ramp
+is worse than the fallback.

@@ -135,26 +135,33 @@ gtm.opts.statusline_format = "detailed"
 check("detailed format", gtm.statusline():find("%[") ~= nil, gtm.statusline())
 gtm.opts.statusline_format = "compact"
 
-print("\n[pulse events]")
+print("\n[pulse events: fallback palette]")
 if push.client then
 	local palette = frame("reactive_palette", fixstr("#3b6ea5"), fixstr("#d94f70"), fixstr("#7ec8a9"))
 	push.client:write(be32(#palette) .. palette)
 	vim.wait(1000, function()
-		return theme.palette() ~= nil
+		return theme.roles() ~= nil
 	end, 20)
 
-	local pal = theme.palette()
-	check("palette decoded from MessagePack", pal ~= nil and pal.primary[1] == 0x3b and pal.primary[2] == 0x6e, vim.inspect(pal))
-	check("tint applied to Normal", vim.api.nvim_get_hl(0, { name = "Normal" }).bg ~= nil)
+	local roles = theme.roles()
+	check("palette derived locally", theme.source() == "local", tostring(theme.source()))
+	check("roles populated from 3 hex colours", roles ~= nil and roles.bg0 ~= nil and roles.accent ~= nil, vim.inspect(roles))
+	check("Normal takes the local bg0", vim.api.nvim_get_hl(0, { name = "Normal" }).bg == roles.bg0)
 	check("semantic groups untouched", vim.api.nvim_get_hl(0, { name = "Error" }).fg ~= nil)
 
-	-- A track end has to give the editor back.
+	-- An empty palette means "no art", which clears rather than tints black.
+	local empty = frame("reactive_palette", fixstr(""), fixstr(""), fixstr(""))
+	push.client:write(be32(#empty) .. empty)
+	vim.wait(1000, function()
+		return theme.roles() == nil
+	end, 20)
+	check("empty palette clears the tint", theme.roles() == nil)
+
+	-- A track end has to give the editor back too.
 	local ended = frame("track_ended")
 	push.client:write(be32(#ended) .. ended)
-	vim.wait(1000, function()
-		return theme.palette() == nil
-	end, 20)
-	check("track end clears the tint", theme.palette() == nil)
+	vim.wait(300)
+	check("track end leaves nothing tinted", theme.roles() == nil)
 
 	-- Telemetry must be dropped without being decoded.
 	local junk = frame("spectrum_changed")
@@ -165,22 +172,92 @@ else
 	check("pulse client accepted", false)
 end
 
+print("\n[pulse events: daemon role sets]")
+if push.client then
+	-- ver, dark map, light map. `vim.mpack.encode` makes a msgpack map; the
+	-- frame wraps it in the event array the daemon would produce.
+	local function role_map(bg, fg, accent)
+		return vim.mpack.encode({
+			bg0 = bg, bg1 = bg, bg2 = bg, bg3 = bg, sel_bg = bg,
+			fg = fg, fg_dim = fg, cursor_line_nr = accent,
+			accent = accent, accent2 = accent, accent3 = accent,
+		})
+	end
+	-- Roles cross the wire as `#rrggbb` strings, so the fake daemon sends those.
+	local function roles_frame()
+		local payload = "\x91\x94" .. fixstr("reactive_theme") .. string.char(1)
+			.. role_map("#0d0d12", "#e0e0e0", "#3b6ea5")
+			.. role_map("#f6f4f1", "#1a1a1a", "#9c3b52")
+		return be32(#payload) .. payload
+	end
+
+	push.client:write(roles_frame())
+	vim.wait(1000, function()
+		return theme.source() == "daemon"
+	end, 20)
+
+	check("role set adopted from the daemon", theme.source() == "daemon", tostring(theme.source()))
+	check("token-set version recorded", theme.version() == 1, tostring(theme.version()))
+	check("dark polarity picked for a dark editor", theme.roles().bg0 == 0x0d0d12, vim.inspect(theme.roles().bg0))
+	check("Normal takes the daemon's bg0", vim.api.nvim_get_hl(0, { name = "Normal" }).bg == 0x0d0d12)
+	check("semantic groups still untouched", vim.api.nvim_get_hl(0, { name = "Error" }).fg ~= nil)
+
+	-- An incomplete role set must be refused outright, not half-applied.
+	local partial = "\x91\x94" .. fixstr("reactive_theme") .. string.char(1)
+		.. vim.mpack.encode({ bg0 = "#ffffff" }) .. vim.mpack.encode({ bg0 = "#ffffff" })
+	push.client:write(be32(#partial) .. partial)
+	vim.wait(400)
+	check("incomplete role set refused", theme.roles().bg0 == 0x0d0d12, "a partial set overwrote the tint")
+
+	-- A colorscheme swap re-picks polarity from the stored sets.
+	vim.o.background = "light"
+	theme.on_colorscheme()
+	local light_bg = theme.roles().bg0
+	check("light polarity picked after a colorscheme change", light_bg == 0xf6f4f1, vim.inspect(light_bg))
+	vim.o.background = "dark"
+	theme.on_colorscheme()
+	check("dark polarity restored", theme.roles().bg0 == 0x0d0d12)
+else
+	check("pulse client accepted", false)
+end
+
 print("\n[theme restore]")
-local before = vim.api.nvim_get_hl(0, { name = "Normal" })
-local palette = frame("reactive_palette", fixstr("#3b6ea5"), fixstr("#d94f70"), fixstr("#7ec8a9"))
-push.client:write(be32(#palette) .. palette)
-vim.wait(1000, function()
-	return theme.palette() ~= nil
-end, 20)
+-- The role-set checks above leave a tint up; drop it before taking the baseline.
 theme.restore()
-check("Normal restored exactly", vim.deep_equal(before, vim.api.nvim_get_hl(0, { name = "Normal" })))
+local pristine = vim.api.nvim_get_hl(0, { name = "Normal" })
+theme.apply({ primary = "#3b6ea5", secondary = "#d94f70", tertiary = "#7ec8a9" })
+check("tint re-applied", theme.roles() ~= nil)
+theme.restore()
+check("Normal restored exactly", vim.deep_equal(pristine, vim.api.nvim_get_hl(0, { name = "Normal" })))
+
+-- A colorscheme change must not capture the tint as the new baseline.
+local function role_set(bg, fg, accent)
+	local set = { ver = 1 }
+	for _, polarity in ipairs({ "dark", "light" }) do
+		set[polarity] = {
+			bg0 = bg, bg1 = bg, bg2 = bg, bg3 = bg, sel_bg = bg,
+			fg = fg, fg_dim = fg, cursor_line_nr = accent,
+			accent = accent, accent2 = accent, accent3 = accent,
+		}
+	end
+	return set
+end
+
+theme.set_roles(role_set("#0d0d12", "#e0e0e0", "#3b6ea5"))
+check("tinted before the colorscheme swap", vim.api.nvim_get_hl(0, { name = "Normal" }).bg ~= pristine.bg)
+theme.on_colorscheme()
+check("tint survives a colorscheme swap", theme.roles() ~= nil)
+theme.restore()
+local now = vim.api.nvim_get_hl(0, { name = "Normal" })
+check("restore still returns the pristine colour", vim.deep_equal(pristine, now))
 
 print("\n[commands]")
 check("Gtm command registered", vim.fn.exists(":Gtm") == 2)
 vim.cmd("Gtm next")
 check("Gtm next ran cleanly", true)
 local completions = vim.fn.getcompletion("Gtm ", "cmdline")
-check("subcommand completion", vim.tbl_contains(completions, "play") and vim.tbl_contains(completions, "seek"), vim.inspect(completions))
+local has_sub = vim.tbl_contains(completions, "play") and vim.tbl_contains(completions, "seek")
+check("subcommand completion", has_sub, vim.inspect(completions))
 
 print("\n[health]")
 local healthy, herr = pcall(require("gtm.health").check)

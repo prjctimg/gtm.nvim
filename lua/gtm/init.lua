@@ -185,17 +185,16 @@ local HANDLERS = {
 		end
 	end,
 	reactive_palette = function(ev)
-		if not theme.enabled() then
-			return
-		end
-		-- Three empty strings mean the daemon had no art to read, which is a
-		-- clear rather than a black palette.
-		local pal = theme.palette_from(ev)
-		if pal then
-			theme.apply(pal)
-		else
-			unpaint()
-		end
+		-- Fallback path: three hex strings, only from a daemon too old to send
+		-- resolved role sets. `apply` clears the tint when they are empty, which
+		-- is the daemon saying it had no art rather than that the art is black.
+		theme.apply(ev)
+	end,
+	-- Preferred path: gtmd resolved the whole ramp and sends both polarities.
+	-- Ignored if the role set is incomplete, so a mixed-version daemon can
+	-- never half-tint.
+	reactive_theme = function(ev)
+		theme.set_roles(ev)
 	end,
 }
 

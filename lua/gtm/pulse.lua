@@ -40,6 +40,9 @@ local EVENT_FIELDS = {
 	duration_changed = { "duration" },
 	radio_title_changed = { "title" },
 	reactive_palette = { "primary", "secondary", "tertiary" },
+	-- Resolved role sets from a daemon new enough to send them. The two maps
+	-- arrive as MessagePack maps, which `vim.mpack` decodes into tables.
+	reactive_theme = { "ver", "dark", "light" },
 }
 
 local WANTED = {
@@ -53,6 +56,7 @@ local WANTED = {
 	duration_changed = true,
 	radio_title_changed = true,
 	reactive_palette = true,
+	reactive_theme = true,
 	-- Not decoded for content, only liveness: a silent pulse stream is the
 	-- symptom of a daemon that is up but not serving.
 	heartbeat = true,

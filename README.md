@@ -77,6 +77,18 @@ A few things worth knowing:
 - `:Gtm theme reset` puts everything back exactly as it was.
 - A track with no cover art never tints. That is the daemon's call to make, not the plugin's.
 
+#### Colour ownership
+
+A newer gtmd goes further: it resolves the palette into a full set of **roles** —
+surfaces, foregrounds, accents, selection, syntax, semantics — and pushes those.
+The plugin then maps roles onto highlight groups and does no arithmetic at all,
+which is what keeps it, the gtm TUI, and any future editor plugin in agreement.
+
+`:checkhealth gtm` says which of the two is in play: colours resolved by gtmd
+(with the role-set version), or derived locally because your gtmd predates the
+role-set event. The local path is a fallback and is planned for removal once the
+role-set event is widely deployed.
+
 ## Statusline
 
 ```lua

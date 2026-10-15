@@ -95,11 +95,22 @@ it; this plugin never decodes an image.
     stops or the track ends.
   - Semantic groups (Error, Warning, Diff, Spell, Todo, diagnostics, gitSigns)
     keep their colorscheme colours.
-  - Changing colorscheme mid-track re-tints rather than losing the palette.
+  - Changing colorscheme mid-track re-picks light or dark and re-tints rather
+    than losing the palette.
   - A track with no cover art never tints.
   - `:Gtm theme reset` restores every group to exactly its prior value.
 
 Add your own groups to the tint with `opts.theme.extra_groups`.
+
+Colour ownership ~
+A gtmd new enough to send resolved role sets computes the whole ramp itself and
+pushes it as `bg0`, `fg`, `accent`, and the rest. The plugin only maps roles onto
+highlight groups, so it performs no colour arithmetic and stays consistent with
+the gtm TUI and any other client.
+
+Against an older gtmd the plugin falls back to deriving the same roles locally
+from the three palette colours. `:checkhealth gtm` reports which path is live
+and the role-set version when the daemon resolved them.
 
 ==============================================================================
 5. LUA API						*gtm.nvim-api*
