@@ -78,8 +78,8 @@ local function theming()
 	if not roles then
 		return H.warn("enabled, but no palette has arrived yet - the daemon extracts it from the cover art")
 	end
-	local h = theme.palette_hexes()
-	H.ok(string.format("tinted: %s %s %s", h.primary, h.secondary, h.tertiary))
+	local a, b, c = theme.palette_hexes()
+	H.ok(string.format("tinted: %s %s %s", a, b, c))
 	if theme.source() == "daemon" then
 		H.ok(string.format("colours resolved by gtmd (role set v%s)", tostring(theme.version())))
 	else

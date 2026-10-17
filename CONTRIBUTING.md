@@ -43,17 +43,24 @@ is wrong, it is almost always in there.
 
 ## Tests
 
-There is a headless integration test. It stands up a fake `gtmd` — a JSON
-command socket and a MessagePack pulse socket — and drives the plugin through
-the whole path: connect, prime, position extrapolation, pulse decoding, tint
-apply and restore, commands and health.
+Two headless scripts, both exiting non-zero on failure.
 
 ```bash
+nvim --headless -l scripts/checkrefs.lua
 nvim --headless -l scripts/smoke.lua
 ```
 
-No daemon needed, and it exits non-zero on failure. Run it after any change to
-the IPC or theme paths.
+`checkrefs.lua` resolves every cross-module call in `init.lua` and `health.lua`
+against the modules as loaded, so a renamed helper that one caller missed fails
+at push instead of at a user's keyboard.
+
+`smoke.lua` stands up a fake `gtmd` — a JSON command socket and a MessagePack
+pulse socket — and drives the plugin through the whole path: connect, prime,
+position extrapolation, pulse decoding, tint apply and restore, every `:Gtm`
+subcommand, and health.
+
+Neither needs a daemon. Run both after any change to the IPC, theme or command
+paths.
 
 ## Linting
 
@@ -110,6 +117,7 @@ lua/gtm/
 └── plugin_spec.lua  lazy.nvim spec
 plugin/gtm.lua      Auto-setup loader for non-plugin-manager installs
 scripts/smoke.lua    Headless fake-daemon integration test
+scripts/checkrefs.lua  Cross-module reference check
 ```
 
 The pulse stream is the source of truth for state changes. Position is
@@ -119,6 +127,7 @@ heal drift the plugin was never told about.
 ## Before you open a PR
 
 ```bash
+nvim --headless -l scripts/checkrefs.lua
 nvim --headless -l scripts/smoke.lua
 luacheck lua plugin
 ```

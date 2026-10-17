@@ -37,7 +37,10 @@ This is free software released under the GPL-3.0 license.
   actually flowing — the usual answers to "why is nothing happening".
 - `LICENSE`, `CONTRIBUTING.md` and `CODE_OF_CONDUCT.md`, matching GTM's.
 - `:Gtm disconnect` and `require("gtm").cycle_repeat()`, `set_volume()`,
-  `statusline()`, `lualine_component()`, `reset_theme()` as Lua API.
+  `statusline()` and `lualine_component()` as Lua API.
+- `scripts/checkrefs.lua`, which resolves every cross-module call in `init.lua`
+  and `health.lua` against the modules as loaded. A renamed helper that one
+  caller missed now fails at push rather than at a user's keyboard.
 
 ### Changed
 
@@ -103,6 +106,9 @@ This is free software released under the GPL-3.0 license.
 - Status payloads deep-normalize JSON `null` (`vim.NIL`, a truthy sentinel) to
   real `nil` at every ingestion boundary, so an idle daemon sending
   `current_track: null` no longer crashes the statusline.
+- `:Gtm theme` read the palette through a helper that no longer existed, so it
+  always reported "no palette from the daemon yet" even with a tint applied.
+  Every `:Gtm` subcommand now has a smoke check.
 
 ## [0.1.0] - 2025-01-01
 

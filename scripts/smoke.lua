@@ -259,6 +259,43 @@ local completions = vim.fn.getcompletion("Gtm ", "cmdline")
 local has_sub = vim.tbl_contains(completions, "play") and vim.tbl_contains(completions, "seek")
 check("subcommand completion", has_sub, vim.inspect(completions))
 
+-- Every subcommand runs without raising. This is the surface that broke when a
+-- helper was renamed under one caller and not another.
+local subcommands = { "play", "next", "prev", "stop", "volup", "voldown", "mute", "shuffle", "status", "theme", "seek 30", "repeat one", "theme reset" }
+local broken = {}
+for _, sub in ipairs(subcommands) do
+	local ok, err = pcall(vim.cmd, "Gtm " .. sub)
+	if not ok then
+		broken[#broken + 1] = sub .. " -> " .. tostring(err)
+	end
+end
+check("every subcommand runs", #broken == 0, table.concat(broken, " | "))
+
+-- `:Gtm theme` is the one that reads back the live tint; a nil helper here is
+-- invisible until a user runs it.
+theme.apply({ primary = "#3b6ea5", secondary = "#d94f70", tertiary = "#7ec8a9" })
+local real_notify = vim.notify
+local function capture(...)
+	local seen = {}
+	vim.notify = function(msg)
+		seen[#seen + 1] = tostring(msg)
+	end
+	local results = { pcall(...) }
+	vim.notify = real_notify
+	return seen, results
+end
+
+local seen = capture(vim.cmd, "Gtm theme")
+check(":Gtm theme reports the live palette", #seen == 1 and seen[1]:find("^%[gtm%] #%x%x%x%x%x%x ") ~= nil, vim.inspect(seen))
+vim.cmd("Gtm theme reset")
+check(":Gtm theme reset clears the tint", theme.roles() == nil)
+
+-- Bad arguments must be reported, not sent.
+seen = capture(vim.cmd, "Gtm seek notanumber")
+check("bad :Gtm seek is reported, and only once", #seen == 1 and seen[1]:find("expected seconds") ~= nil, vim.inspect(seen))
+seen = capture(vim.cmd, "Gtm bogus")
+check("unknown subcommand is reported", #seen == 1 and seen[1]:find("unknown subcommand") ~= nil, vim.inspect(seen))
+
 print("\n[health]")
 local healthy, herr = pcall(require("gtm.health").check)
 check("health.check runs", healthy, herr)

@@ -16,6 +16,8 @@ local I = {}
 local uv = vim.uv
 local hrtime = uv.hrtime
 
+--- Public state. `status` is the last `PlaybackStatus` snapshot; everything
+--- below the bar is internal.
 I.sock = nil
 I.path = nil
 I.connected = false
@@ -28,6 +30,7 @@ local MAX_ATTEMPTS = 30
 local id, buf, pending = 0, "", {}
 local retry_timer, delay, attempts = nil, 500, 0
 local base_pos, base_time, duration, updated = 0, 0, 0, 0
+local on_connected = nil
 
 -- `vim.NIL` (JSON null) decodes to a truthy sentinel that slips through plain
 -- `if x then` idioms and then crashes on indexing — gtmd sends
@@ -69,8 +72,9 @@ function I.pulse_path()
 	return (I.path or I.resolve_path()):gsub("gtmd%.sock$", "gtmd.pulse")
 end
 
-function I.connect(path)
-	I.path = path or I.resolve_path()
+--- `hook` runs after every (re)connect, once the snapshot has been primed.
+function I.connect(path, hook)
+	I.path, on_connected = path or I.resolve_path(), hook
 	if uv.fs_stat(I.path) then
 		I._open()
 	else
@@ -81,11 +85,7 @@ function I.connect(path)
 end
 
 function I.disconnect()
-	if retry_timer then
-		retry_timer:stop()
-		retry_timer:close()
-		retry_timer = nil
-	end
+	stop_retry()
 	if I.sock then
 		I.sock:read_stop()
 		I.sock:close()
@@ -96,6 +96,22 @@ function I.disconnect()
 	pending = {}
 end
 
+--- Forget the track without touching the socket: a track ended and no new
+--- snapshot has arrived yet, so the clock must not keep advancing from it.
+function I.clear()
+	I.status, base_pos, duration = nil, 0, 0
+	updated = hrtime()
+end
+
+--- Run `hook` after every (re)connect, once the snapshot has been primed.
+local function stop_retry()
+	if retry_timer then
+		retry_timer:stop()
+		retry_timer:close()
+		retry_timer = nil
+	end
+end
+
 function I._open()
 	if I.sock then
 		return
@@ -103,7 +119,7 @@ function I._open()
 	local sock = uv.new_pipe(false)
 	I.sock = sock
 	sock:connect(I.path, function(err)
-		-- A stale handle from a racing retry can land here late; the `~=` check
+		-- A stale handle from a racing retry can land here late; the `~= check
 		-- drops it instead of resurrecting a dead pipe.
 		if err or I.sock ~= sock then
 			sock:close()
@@ -120,8 +136,8 @@ function I._open()
 			if resp and resp.state then
 				I.set_status(resp.state)
 			end
-			if I._on_connect then
-				I._on_connect()
+			if on_connected then
+				on_connected()
 			end
 		end)
 	end)
@@ -135,11 +151,7 @@ function I._retry()
 	end
 	retry_timer = uv.new_timer()
 	retry_timer:start(delay, 0, function()
-		if retry_timer then
-			retry_timer:stop()
-			retry_timer:close()
-			retry_timer = nil
-		end
+		stop_retry()
 		attempts = attempts + 1
 		if attempts > MAX_ATTEMPTS then
 			vim.notify("[gtm] gave up reconnecting to gtmd", vim.log.levels.ERROR)

@@ -2,23 +2,21 @@
 -- Author: prjctimg <prjctimg@outlook.com>
 -- gtm.theme: apply the reactive theme
 --
--- gtmd owns the colours. It extracts a palette from the cover of the track on
+-- gtmd owns the colours: it extracts a palette from the cover of the track on
 -- air and pushes a resolved *role set* — `bg0`, `fg`, `accent`, and the rest —
--- over the pulse socket. This module holds no arithmetic in the normal path: it
--- picks the polarity and maps roles onto highlight groups.
+-- over the pulse socket. This module picks the polarity and maps roles onto
+-- highlight groups; it performs no arithmetic on that path.
 --
--- Local derivation below is a fallback for daemons older than the role-set
--- event, which send only `reactive_palette` (three colours). It emits the same
--- role names, so `apply` has a single path either way. Delete it once the
--- daemon release carrying role sets is widely deployed.
+-- The local derivation below is a fallback for daemons older than the role-set
+-- event, which send only `reactive_palette`. It emits the same role names so
+-- `apply` has one path either way. Delete it once the role-set daemon release
+-- is widely deployed.
 --
--- Two rules hold throughout:
---
---   * Meaningful colours stay put. Error, warning, diff, spell and `Todo` groups
---     are never tinted — an error that changes colour with the artwork is worse
---     than no error colour at all.
---   * A group is only written when its role is known. Leaving an unrecognised
---     group at its colorscheme value beats guessing.
+-- Two rules hold throughout: semantic groups (Error, Warning, Diff, Spell, Todo,
+-- diagnostics, gitSigns) are never tinted, because an error that changes colour
+-- with the artwork is worse than no error colour at all; and a group is only
+-- written when its role is known, because leaving it at its colorscheme value
+-- beats guessing.
 --
 -- This is free software released under the GPL-3.0 license.
 
@@ -27,7 +25,7 @@ local T = {}
 T._enabled, T._touched, T._snap, T._extra = false, {}, nil, {}
 
 -- Roles this module consumes. A daemon role set missing any of them is ignored
--- in favour of local derivation, so an older daemon can never half-tint.
+-- in favour of local derivation: a half-applied ramp is worse than a fallback.
 local NEED = {
 	"bg0", "bg1", "bg2", "bg3", "sel_bg",
 	"fg", "fg_dim", "cursor_line_nr",
@@ -63,14 +61,7 @@ local SLOT = {
 	comment = "accent3", punctuation = "accent3",
 }
 
---- The foreground role a group takes.
-local function fg_role(name)
-	local slot = SLOT[name:gsub("^@", ""):gsub("[%w_]+$", "")]
-	return SURFACE_FG[name] or (DIM[name] and "fg_dim") or (slot and SLOT[slot]) or "fg"
-end
-
--- Groups that carry meaning rather than decoration. Prefix matching catches the
--- spell and diagnostic variants.
+-- Prefix matching catches the spell and diagnostic variants.
 local SEMANTIC = {
 	Error = true, WarnMsg = true, MoreMsg = true, Question = true,
 	Info = true, Hint = true, Todo = true, Diagnostic = true,
@@ -84,6 +75,12 @@ local function is_semantic(name)
 		end
 	end
 	return name:sub(1, 8) == "gitSigns"
+end
+
+--- The foreground role a group takes.
+local function fg_role(name)
+	local slot = SLOT[name:gsub("^@", ""):gsub("[%w_]+$", "")]
+	return SURFACE_FG[name] or (DIM[name] and "fg_dim") or (slot and SLOT[slot]) or "fg"
 end
 
 -- ============================================================================
@@ -107,9 +104,7 @@ end
 function T.setup(opts)
 	opts = opts or {}
 	T._enabled, T._extra = opts.reactive == true, opts.extra_groups or {}
-	T._touched = {}
-	T._snap, T._roles, T._sets, T._ver = nil, nil, nil, nil
-	T._src, T._pal = nil, nil
+	T._touched, T._roles, T._sets, T._ver, T._pal, T._src = {}, nil, nil, nil, nil, nil
 	T.snapshot()
 end
 
@@ -139,7 +134,7 @@ function T.restore()
 			vim.api.nvim_set_hl(0, name, vim.deepcopy(T._snap[name]))
 		end
 	end
-	T._touched, T._roles, T._src, T._pal = {}, nil, nil, nil
+	T._touched, T._roles, T._src, T._pal, T._ver = {}, nil, nil, nil, nil
 end
 
 T.clear = T.restore
@@ -148,11 +143,10 @@ T.clear = T.restore
 -- Applying a role set
 -- ============================================================================
 
---- Apply resolved roles. This is the only path that writes highlights; both
---- colour sources funnel through it.
+--- Apply resolved roles. The only path that writes highlights; both colour
+--- sources funnel through it.
 local function apply(roles)
 	T._roles, T._touched = roles, {}
-
 	for name, saved in pairs(T._snap or {}) do
 		-- Linked groups resolve on their own; rewriting one would freeze the
 		-- link into a literal.
@@ -167,7 +161,6 @@ local function apply(roles)
 			T._touched[name] = true
 		end
 	end
-
 	for _, name in ipairs(T._extra) do
 		vim.api.nvim_set_hl(0, name, { fg = roles.fg, bg = roles.bg1 })
 		T._touched[name] = true
@@ -178,55 +171,53 @@ end
 -- Source 1: roles from the daemon (preferred)
 -- ============================================================================
 
---- "#rrggbb" -> 0xRRGGBB, or nil if that is not one.
-local function as_int(hex)
-	local h = type(hex) == "string" and hex:match("^#(%x%x%x%x%x%x)$")
-	return h and (tonumber(h:sub(1, 2), 16) * 65536 + tonumber(h:sub(3, 4), 16) * 256 + tonumber(h:sub(5, 6), 16)) or nil
+local function from_hex(s)
+	local h = type(s) == "string" and s:match("^#(%x%x%x%x%x%x)$")
+	return h and { tonumber(h:sub(1, 2), 16), tonumber(h:sub(3, 4), 16), tonumber(h:sub(5, 6), 16) } or nil
+end
+
+--- {r,g,b} -> 0xRRGGBB, the form `nvim_set_hl` takes.
+local function rgb_int(c)
+	return c[1] * 65536 + c[2] * 256 + c[3]
+end
+
+--- Choose the polarity matching the editor's own background.
+local function pick()
+	local roles = T._sets and T._sets[vim.o.background == "light" and "light" or "dark"]
+	if roles then
+		T._src = "daemon"
+		apply(roles)
+	end
 end
 
 --- Adopt a `reactive_theme` event. Both polarities are kept so a colorscheme
---- switch can re-pick without waiting for the next track.
+--- switch can re-pick without waiting for the next track. An incomplete set is
+--- ignored outright rather than half-applied.
 function T.set_roles(ev)
 	if not T._enabled or type(ev) ~= "table" then
 		return
 	end
 	local sets, complete = {}, true
 	for _, polarity in ipairs({ "dark", "light" }) do
-		local raw = ev[polarity]
+		local raw, roles = ev[polarity], {}
 		if type(raw) ~= "table" then
 			complete = false
 			break
 		end
-		local roles = {}
 		for _, role in ipairs(NEED) do
-			roles[role] = as_int(raw[role])
-			if not roles[role] then
+			local rgb = from_hex(raw[role])
+			if not rgb then
 				complete = false
 				break
 			end
+			roles[role] = rgb_int(rgb)
 		end
 		sets[polarity] = roles
 	end
-	if not complete then
-		-- An older or partial role set is ignored outright; a half-applied ramp
-		-- is worse than the local derivation.
-		return
+	if complete then
+		T._sets, T._ver = sets, ev.ver
+		pick()
 	end
-	T._sets, T._ver = sets, ev.ver
-	T._pick()
-end
-
---- Choose the polarity matching the editor's own background.
-function T._pick()
-	if not T._sets then
-		return
-	end
-	local roles = T._sets[vim.o.background == "light" and "light" or "dark"]
-	if not roles then
-		return
-	end
-	T._src = "daemon"
-	apply(roles)
 end
 
 -- ============================================================================
@@ -298,44 +289,36 @@ local function adjust(c, light)
 end
 
 --- Build the same role names from three album colours. Mirrors the daemon's
---- `derive(pal, dark)` so both sources are interchangeable.
+--- `derive(pal, dark)` so the two sources are interchangeable. The album hue
+--- drives every surface; only saturation and the four lightness steps differ
+--- between polarities.
 local function derive(pal, light)
 	local h, s = rgb_to_hsv(pal.primary)
-	local int = function(c)
-		return c[1] * 65536 + c[2] * 256 + c[3]
-	end
-
-	-- The album hue drives every surface; only the saturation and the four
-	-- lightness steps differ between polarities.
-	local sat = light and s * 0.25 or s * 0.45
+	local sat, fs = light and s * 0.25 or s * 0.45, light and s * 0.15 or s * 0.12
 	local bg = {}
 	for i, v in ipairs(light and { 0.975, 0.945, 0.910, 0.850 } or { 0.060, 0.090, 0.120, 0.170 }) do
-		bg[i] = int(hsv_to_rgb(h, sat, v))
+		bg[i] = hsv_to_rgb(h, sat, v)
 	end
-
-	local accent = int(adjust(pal.primary, light))
-	local fs = light and s * 0.15 or s * 0.12
+	local accent = rgb_int(adjust(pal.primary, light))
 
 	return {
-		bg0 = bg[1], bg1 = bg[2], bg2 = bg[3], bg3 = bg[4],
-		sel_bg = int(mix(hsv_to_rgb(h, sat, light and 0.975 or 0.060), pal.primary, 0.30)),
-		fg = int(hsv_to_rgb(h, fs, light and 0.16 or 0.90)),
-		fg_dim = int(hsv_to_rgb(h, fs, light and 0.44 or 0.60)),
+		bg0 = rgb_int(bg[1]),
+		bg1 = rgb_int(bg[2]),
+		bg2 = rgb_int(bg[3]),
+		bg3 = rgb_int(bg[4]),
+		sel_bg = rgb_int(mix(bg[1], pal.primary, 0.30)),
+		fg = rgb_int(hsv_to_rgb(h, fs, light and 0.16 or 0.90)),
+		fg_dim = rgb_int(hsv_to_rgb(h, fs, light and 0.44 or 0.60)),
 		accent = accent,
-		accent2 = int(adjust(pal.secondary, light)),
-		accent3 = int(adjust(pal.tertiary, light)),
+		accent2 = rgb_int(adjust(pal.secondary, light)),
+		accent3 = rgb_int(adjust(pal.tertiary, light)),
 		cursor_line_nr = accent,
 	}
 end
 
---- "#rrggbb" for one channel triple, the form the palette crosses the wire in.
-local function from_hex(s)
-	local h = type(s) == "string" and s:match("^#(%x%x%x%x%x%x)$")
-	return h and { tonumber(h:sub(1, 2), 16), tonumber(h:sub(3, 4), 16), tonumber(h:sub(5, 6), 16) } or nil
-end
-
---- Palette from a `reactive_palette` event, or nil if any channel is missing.
---- The fallback path only: three empty strings mean the daemon had no art.
+--- Palette from a `reactive_palette` event. The fallback path only; three empty
+--- strings mean the daemon had no art, which is a clear rather than a black
+--- palette.
 function T.apply(ev)
 	if not T._enabled or type(ev) ~= "table" then
 		return
@@ -348,33 +331,29 @@ function T.apply(ev)
 	apply(derive(T._pal, vim.o.background ~= "light"))
 end
 
---- The three colours behind the current tint, for `:Gtm theme`.
+--- The three accent colours behind the current tint, for `:Gtm theme`.
 function T.palette_hexes()
-	local roles = T._roles
-	if not roles then
-		return { primary = "n/a", secondary = "n/a", tertiary = "n/a" }
-	end
 	local function hx(n)
-		return string.format("#%02x%02x%02x", math.floor(n / 65536) % 256, math.floor(n / 256) % 256, n % 256)
+		return n and string.format("#%02x%02x%02x", math.floor(n / 65536) % 256, math.floor(n / 256) % 256, n % 256) or "n/a"
 	end
-	return { primary = hx(roles.accent), secondary = hx(roles.accent2), tertiary = hx(roles.accent3) }
+	local r = T._roles or {}
+	return hx(r.accent), hx(r.accent2), hx(r.accent3)
 end
 
 --- The colorscheme changed. Put the tint down before re-snapshotting: the
 --- semantic groups are now someone else's, and snapshotting while our own
 --- colours are still applied would record the tint as the colorscheme's own and
---- make a later restore a no-op. Then re-apply: a daemon role set just re-picks
---- its polarity, a local one re-derives against the new background.
+--- make a later restore a no-op. Then re-apply against the new background.
 function T.on_colorscheme()
 	if not T._enabled or not T._src then
 		return
 	end
-	local src, sets, pal = T._src, T._sets, T._pal
+	local src, pal = T._src, T._pal
 	T.restore()
 	T.snapshot()
-	if src == "daemon" and sets then
-		T._pick()
-	elseif src == "local" and pal then
+	if src == "daemon" then
+		pick()
+	elseif pal then
 		apply(derive(pal, vim.o.background ~= "light"))
 	end
 end

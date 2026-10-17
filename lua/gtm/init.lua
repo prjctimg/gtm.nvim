@@ -16,7 +16,6 @@ local theme = require("gtm.theme")
 local uv = vim.uv
 
 local defaults = {
-	socket_path = nil,
 	statusline_format = "compact", -- "compact" | "detailed"
 	resync_interval = 30000,
 	theme = { reactive = false, extra_groups = {} },
@@ -33,30 +32,13 @@ local defaults = {
 G.opts = vim.deepcopy(defaults)
 local resync = nil
 
--- Playback: every one of these is a single command send.
-function G.play_pause()
-	ipc.send("play_pause")
-end
-
-function G.next()
-	ipc.send("next")
-end
-
-function G.prev()
-	ipc.send("prev")
-end
-
-function G.stop()
-	ipc.send("stop")
-end
-
-function G.mute()
-	ipc.send("toggle_mute")
-end
-
-function G.shuffle()
-	ipc.send("toggle_shuffle")
-end
+-- Playback: each is a single command send.
+function G.play_pause() ipc.send("play_pause") end
+function G.next() ipc.send("next") end
+function G.prev() ipc.send("prev") end
+function G.stop() ipc.send("stop") end
+function G.mute() ipc.send("toggle_mute") end
+function G.shuffle() ipc.send("toggle_shuffle") end
 
 --- RepeatMode arrives PascalCase on the wire; accept the lowercase a user types.
 --- (`repeat` is a Lua keyword, so the public name cannot be `G.repeat`.)
@@ -82,12 +64,12 @@ end
 local ICON = { playing = "▶", paused = "⏸", stopped = "⏹" }
 
 local function fmt_time(secs)
-	return secs and secs >= 0 and string.format("%02d:%02d", math.floor(secs / 60), math.floor(secs % 60)) or "00:00"
+	return string.format("%02d:%02d", math.floor(secs / 60), math.floor(secs % 60))
 end
 
-local function bar(pos, dur, width)
-	local filled = dur > 0 and math.floor(math.min(1, pos / dur) * width) or 0
-	return string.rep("━", filled) .. string.rep("─", width - filled)
+local function bar(pos, dur)
+	local filled = dur > 0 and math.floor(math.min(1, pos / dur) * 20) or 0
+	return string.rep("━", filled) .. string.rep("─", 20 - filled)
 end
 
 --- `artist - title`, or nil when nothing is loaded. An empty statusline is
@@ -103,8 +85,7 @@ local function compact()
 		return ""
 	end
 	local icon, vol = ICON[s.status] or "⏹", s.volume or 0
-	local progress = bar(ipc.position(), ipc.duration(), 20)
-	return string.format("%s %s vol:%d%% %s", name, icon, vol, progress)
+	return string.format("%s %s vol:%d%% %s", name, icon, vol, bar(ipc.position(), ipc.duration()))
 end
 
 local function detailed()
@@ -113,18 +94,16 @@ local function detailed()
 		return "GTM - not playing"
 	end
 	local parts = { ICON[s.status] or "⏹", name }
-	local function put(text)
-		parts[#parts + 1] = text
-	end
 	if s.current_track.album and s.current_track.album ~= "" then
-		put("(" .. s.current_track.album .. ")")
+		table.insert(parts, "(" .. s.current_track.album .. ")")
 	end
-	put(string.format("[%s/%s] vol:%d%%", fmt_time(ipc.position()), fmt_time(ipc.duration()), s.volume or 0))
+	local clock = string.format("[%s/%s]", fmt_time(ipc.position()), fmt_time(ipc.duration()))
+	table.insert(parts, string.format("%s vol:%d%%", clock, s.volume or 0))
 	if s["repeat"] and s["repeat"] ~= "off" then
-		put("[R]")
+		table.insert(parts, "[R]")
 	end
 	if s.shuffle then
-		put("[S]")
+		table.insert(parts, "[S]")
 	end
 	return table.concat(parts, " ")
 end
@@ -154,9 +133,7 @@ end
 
 --- Build a handler that lifts one scalar off an event into the snapshot.
 local function patch(key, field)
-	return function(ev)
-		ipc.patch(key, ev[field])
-	end
+	return function(ev) ipc.patch(key, ev[field]) end
 end
 
 local HANDLERS = {
@@ -167,7 +144,7 @@ local HANDLERS = {
 		unpaint()
 	end,
 	track_ended = function()
-		ipc.status = nil
+		ipc.clear()
 		unpaint()
 	end,
 	volume_changed = patch("volume", "volume"),
@@ -184,18 +161,12 @@ local HANDLERS = {
 			ipc.status.current_track = vim.tbl_extend("force", ipc.status.current_track or {}, { title = ev.title })
 		end
 	end,
-	reactive_palette = function(ev)
-		-- Fallback path: three hex strings, only from a daemon too old to send
-		-- resolved role sets. `apply` clears the tint when they are empty, which
-		-- is the daemon saying it had no art rather than that the art is black.
-		theme.apply(ev)
-	end,
+	-- Fallback path: three hex strings, only from a daemon too old to send
+	-- resolved role sets. `apply` clears the tint when they are empty, which is
+	-- the daemon saying it had no art rather than that the art is black.
+	reactive_palette = theme.apply,
 	-- Preferred path: gtmd resolved the whole ramp and sends both polarities.
-	-- Ignored if the role set is incomplete, so a mixed-version daemon can
-	-- never half-tint.
-	reactive_theme = function(ev)
-		theme.set_roles(ev)
-	end,
+	reactive_theme = theme.set_roles,
 }
 
 -- Commands ----------------------------------------------------------------
@@ -213,44 +184,28 @@ end
 local function notify_theme(arg)
 	if arg == "reset" then
 		unpaint()
-		vim.notify("[gtm] reactive theme cleared")
-	elseif not theme.enabled() then
-		vim.notify("[gtm] reactive theming is off (theme.reactive = true)")
-		return
+		return vim.notify("[gtm] reactive theme cleared")
 	end
-	local pal = theme.palette()
-	if not pal then
+	if not theme.enabled() then
+		return vim.notify("[gtm] reactive theming is off (theme.reactive = true)")
+	end
+	if not theme.roles() then
 		return vim.notify("[gtm] no palette from the daemon yet")
 	end
-	local h = theme.palette_hexes(pal)
-	vim.notify(string.format("[gtm] %s %s %s", h.primary, h.secondary, h.tertiary))
+	local a, b, c = theme.palette_hexes()
+	vim.notify(string.format("[gtm] %s %s %s", a, b, c))
 end
 
-function G.disconnect()
+local function disconnect()
 	ipc.disconnect()
 	pulse.close()
 	vim.notify("[gtm] disconnected")
 end
 
---- Subcommands taking a second argument.
-local ARGUMENTARY = {
-	seek = function(arg)
-		local secs = tonumber(arg)
-		if secs then
-			G.seek(secs)
-		else
-			vim.notify("Gtm seek: expected seconds", vim.log.levels.ERROR)
-		end
-	end,
-	["repeat"] = function(arg)
-		G.cycle_repeat(arg or "all")
-	end,
-	theme = notify_theme,
-}
-
---- `name` is the :Gtm subcommand, `key` the opts.keymaps entry, `desc` the
---- keymap description. One table drives both surfaces so they cannot drift.
-local ACTIONS = {
+--- One entry per `:Gtm` subcommand. `arg = true` means it takes a second
+--- argument; `key` and `desc` drive the default keymap. One table so the command
+--- surface, the keymaps and the completion list cannot drift apart.
+local CMDS = {
 	{ name = "play", key = "play_pause", desc = "play/pause", run = G.play_pause },
 	{ name = "next", key = "next", desc = "next track", run = G.next },
 	{ name = "prev", key = "prev", desc = "previous track", run = G.prev },
@@ -260,69 +215,72 @@ local ACTIONS = {
 	{ name = "mute", run = G.mute },
 	{ name = "shuffle", run = G.shuffle },
 	{ name = "status", run = notify_status },
-	{ name = "disconnect", run = G.disconnect },
+	{ name = "disconnect", run = disconnect },
+	{
+		name = "seek", arg = true,
+		run = function(arg)
+			local secs = tonumber(arg)
+			if secs then
+				G.seek(secs)
+			else
+				vim.notify("Gtm seek: expected seconds", vim.log.levels.ERROR)
+			end
+		end,
+	},
+	{ name = "repeat", arg = true, run = function(arg) G.cycle_repeat(arg or "all") end },
+	{ name = "theme", arg = true, run = notify_theme },
 }
 
-local SUBS = {}
-for _, a in ipairs(ACTIONS) do
-	SUBS[#SUBS + 1] = a.name
-end
-for name in pairs(ARGUMENTARY) do
-	SUBS[#SUBS + 1] = name
-end
-table.sort(SUBS)
+local SUBCOMPLETION = { ["repeat"] = { "off", "one", "all" }, theme = { "status", "reset" } }
 
-local function prefix(list, lead)
+local function complete(lead, cmdline)
+	local parts = vim.split(cmdline, "%s+")
+	local list = #parts <= 2 and vim.tbl_map(function(c)
+		return c.name
+	end, CMDS) or SUBCOMPLETION[parts[2]] or {}
 	return vim.tbl_filter(function(s)
 		return s:find(lead, 1, true) == 1
 	end, list)
 end
 
-function G.register()
+local function register()
 	vim.api.nvim_create_user_command("Gtm", function(args)
-		local with_arg = ARGUMENTARY[args.fargs[1]]
-		if with_arg then
-			return with_arg(args.fargs[2])
-		end
-		for _, a in ipairs(ACTIONS) do
-			if a.name == args.fargs[1] then
-				return a.run()
+		for _, c in ipairs(CMDS) do
+			if c.name == args.fargs[1] then
+				-- Not `c.arg and c.run(x) or c.run()`: a run that returns nil
+				-- would fall through and execute twice.
+				if c.arg then
+					return c.run(args.fargs[2])
+				end
+				return c.run()
 			end
 		end
 		vim.notify("Gtm: unknown subcommand '" .. tostring(args.fargs[1]) .. "'", vim.log.levels.ERROR)
-	end, {
-		nargs = "+",
-		complete = function(lead, cmdline)
-			local parts = vim.split(cmdline, "%s+")
-			if #parts <= 2 then
-				return prefix(SUBS, lead)
-			elseif parts[2] == "repeat" then
-				return prefix({ "off", "one", "all" }, lead)
-			elseif parts[2] == "theme" then
-				return prefix({ "status", "reset" }, lead)
-			end
-			return {}
-		end,
-	})
+	end, { nargs = "+", complete = complete })
 
 	local km = G.opts.keymaps or {}
-	for _, a in ipairs(ACTIONS) do
-		local lhs = a.key and km[a.key]
+	for _, c in ipairs(CMDS) do
+		local lhs = c.key and km[c.key]
 		if lhs then
-			vim.keymap.set("n", lhs, a.run, { desc = "GTM: " .. a.desc })
+			vim.keymap.set("n", lhs, c.run, { desc = "GTM: " .. c.desc })
 		end
 	end
 end
 
 -- Setup -------------------------------------------------------------------
 
---- Slow `get_status_lite` poll. Not the primary update path — the pulse stream
---- is — just a floor under drift we were never told about.
-local function start_resync()
+local function stop_resync()
 	if resync then
 		resync:stop()
 		resync:close()
+		resync = nil
 	end
+end
+
+--- Slow `get_status_lite` poll. Not the primary update path — the pulse stream
+--- is — just a floor under drift we were never told about.
+local function start_resync()
+	stop_resync()
 	resync = uv.new_timer()
 	resync:start(G.opts.resync_interval, G.opts.resync_interval, function()
 		ipc.send("get_status_lite", nil, function(resp)
@@ -352,25 +310,20 @@ function G.setup(opts)
 	for name, handler in pairs(HANDLERS) do
 		pulse.on(name, handler)
 	end
-	-- The command socket owns reconnection, so the pulse socket is re-claimed
-	-- here rather than growing its own retry loop.
-	ipc._on_connect = function()
-		pulse.connect(ipc.pulse_path())
-	end
 
-	ipc.connect(G.opts.socket_path)
-	G.register()
+	-- The command socket owns reconnection, so the pulse socket is re-claimed on
+	-- every (re)connect rather than growing its own retry loop.
+	ipc.connect(G.opts.socket_path, function()
+		pulse.connect(ipc.pulse_path())
+	end)
+	register()
 	start_resync()
 
 	vim.api.nvim_create_autocmd("ColorScheme", { desc = "GTM: re-derive reactive theme", callback = theme.on_colorscheme })
 	vim.api.nvim_create_autocmd("VimLeavePre", {
 		desc = "GTM: release daemon resources",
 		callback = function()
-			if resync then
-				resync:stop()
-				resync:close()
-				resync = nil
-			end
+			stop_resync()
 			pulse.close()
 			ipc.disconnect()
 			theme.restore()
@@ -378,10 +331,6 @@ function G.setup(opts)
 	})
 
 	return G
-end
-
-function G.reset_theme()
-	theme.clear()
 end
 
 return G

@@ -24,6 +24,9 @@ jobs:
             luac -p "$f" || { echo "syntax error in $f"; exit 1; }
           done
 
+      - name: Cross-module reference check
+        run: nvim --headless -l scripts/checkrefs.lua
+
       - name: Headless smoke test
         run: nvim --headless -l scripts/smoke.lua
 

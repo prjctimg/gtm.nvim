@@ -12,15 +12,20 @@ reimplement a window, picker or library view here. The whole plugin is under
 No formal build. Plugin loads directly into Neovim.
 
 ```bash
-nvim --headless -l scripts/smoke.lua   # fake-daemon integration test
+nvim --headless -l scripts/checkrefs.lua   # cross-module calls resolve
+nvim --headless -l scripts/smoke.lua       # fake-daemon integration test
 nvim --headless -c 'checkhealth gtm' -c qa
-luacheck lua plugin                    # optional, if installed
+luacheck lua plugin                        # optional, if installed
 ```
+
+`scripts/checkrefs.lua` resolves every `ipc.`/`pulse.`/`theme.` call in
+`init.lua` and `health.lua` against the modules as loaded. A renamed helper that
+one caller missed is a push-time failure instead of a user-time error.
 
 `scripts/smoke.lua` stands up a fake gtmd (JSON command socket + MessagePack
 pulse socket) and asserts on the whole path: connect, prime, position
-extrapolation, pulse decoding, tint apply/restore, commands and health. Run it
-after any change to the IPC or theme paths.
+extrapolation, pulse decoding, tint apply/restore, every `:Gtm` subcommand, and
+health. Run it after any change to the IPC, theme or command paths.
 
 ## Coding Guidelines
 

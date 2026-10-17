@@ -20,9 +20,7 @@ local P = {}
 local uv = vim.uv
 local byte, sub = string.byte, string.sub
 
-P.connected = false
-
-local sock, buf, heartbeat, handlers = nil, "", 0, {}
+local sock, buf, heartbeat, handlers, connected = nil, "", 0, {}, false
 
 -- TrackInfo fields we read, in Rust declaration order. The tuple encoding drops
 -- the names, so positions have to be re-keyed by hand; the remaining fields the
@@ -122,10 +120,10 @@ function P.connect(path)
 			sock = nil
 			return
 		end
-		P.connected, buf = true, ""
+		connected, buf = true, ""
 		pipe:read_start(function(rerr, data)
 			if rerr or not data then
-				P.connected = false
+				connected = false
 				P.close()
 				return
 			end
@@ -152,11 +150,11 @@ function P.close()
 		sock:close()
 		sock = nil
 	end
-	P.connected, buf = false, ""
+	connected, buf = false, ""
 end
 
 function P.is_connected()
-	return P.connected
+	return connected
 end
 
 --- Seconds since the last heartbeat, or nil if none has arrived. gtmd sends

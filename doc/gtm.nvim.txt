@@ -130,9 +130,6 @@ Statusline~
   require("gtm").statusline()        Render using the configured format.
   require("gtm").lualine_component()  lualine component table.
 
-Theming~
-  require("gtm").reset_theme()     Clear the reactive tint.
-
 Note: `repeat` is a Lua keyword, so the public entry point is
 `cycle_repeat()`, not `repeat()`.
 
