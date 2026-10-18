@@ -2,15 +2,12 @@
 -- Author: prjctimg <prjctimg@outlook.com>
 -- gtm.theme: apply the reactive theme
 --
--- gtmd owns the colours: it extracts a palette from the cover of the track on
+-- gtmd owns the colours. It extracts a palette from the cover of the track on
 -- air and pushes a resolved *role set* — `bg0`, `fg`, `accent`, and the rest —
 -- over the pulse socket. This module picks the polarity and maps roles onto
--- highlight groups; it performs no arithmetic on that path.
---
--- The local derivation below is a fallback for daemons older than the role-set
--- event, which send only `reactive_palette`. It emits the same role names so
--- `apply` has one path either way. Delete it once the role-set daemon release
--- is widely deployed.
+-- highlight groups. It performs no colour arithmetic at all: a daemon without
+-- role sets tints nothing, which beats this plugin guessing colours differently
+-- from the TUI.
 --
 -- Two rules hold throughout: semantic groups (Error, Warning, Diff, Spell, Todo,
 -- diagnostics, gitSigns) are never tinted, because an error that changes colour
@@ -104,33 +101,37 @@ end
 function T.setup(opts)
 	opts = opts or {}
 	T._enabled, T._extra = opts.reactive == true, opts.extra_groups or {}
-	T._touched, T._roles, T._sets, T._ver, T._pal, T._src = {}, nil, nil, nil, nil, nil
+	T._touched, T._roles, T._sets, T._ver = {}, nil, nil, nil
 	T.snapshot()
 end
 
 --- Whether reactive theming is on at all.
 function T.enabled() return T._enabled end
 
---- Where the active colours came from: `"daemon"`, `"local"`, or nil.
-function T.source() return T._src end
-
---- Token-set version the daemon advertised, or nil when deriving locally.
+--- Token-set version the daemon advertised.
 function T.version() return T._ver end
 
 --- The active role set (role -> 0xRRGGBB), or nil when nothing is tinted.
 function T.roles() return T._roles end
 
---- Put every group the palette touched back to its snapshot value.
+--- Put every group the palette touched back to its snapshot value. The stored
+--- role sets survive, so a colorscheme change can re-pick from them without
+--- waiting for the next track.
 function T.restore()
 	for name in pairs(T._touched) do
 		if T._snap and T._snap[name] then
 			vim.api.nvim_set_hl(0, name, vim.deepcopy(T._snap[name]))
 		end
 	end
-	T._touched, T._roles, T._src, T._pal, T._ver = {}, nil, nil, nil, nil
+	T._touched, T._roles = {}, nil
 end
 
-T.clear = T.restore
+--- Forget the role sets entirely, as `:Gtm theme reset` asks. Without this a
+--- colorscheme change would resurrect a tint the user just turned off.
+function T.clear()
+	T.restore()
+	T._sets, T._ver = nil, nil
+end
 
 -- ============================================================================
 -- Applying a role set
@@ -178,7 +179,6 @@ end
 local function pick()
 	local roles = T._sets and T._sets[vim.o.background == "light" and "light" or "dark"]
 	if roles then
-		T._src = "daemon"
 		apply(roles)
 	end
 end
@@ -213,117 +213,6 @@ function T.set_roles(ev)
 	end
 end
 
--- ============================================================================
--- Source 2: local derivation (fallback for daemons without role sets)
--- ============================================================================
-
-local function luminance(c)
-	return 0.299 * c[1] + 0.587 * c[2] + 0.114 * c[3]
-end
-
-local function hsv_to_rgb(h, s, v)
-	h = h % 360
-	if h < 0 then
-		h = h + 360
-	end
-	local c = v * s
-	local x = c * (1 - math.abs((h / 60) % 2 - 1))
-	local m = v - c
-	local r, g, b
-	if h < 60 then
-		r, g, b = c, x, 0
-	elseif h < 120 then
-		r, g, b = x, c, 0
-	elseif h < 180 then
-		r, g, b = 0, c, x
-	elseif h < 240 then
-		r, g, b = 0, x, c
-	elseif h < 300 then
-		r, g, b = x, 0, c
-	else
-		r, g, b = c, 0, x
-	end
-	return {
-		math.floor((r + m) * 255 + 0.5),
-		math.floor((g + m) * 255 + 0.5),
-		math.floor((b + m) * 255 + 0.5),
-	}
-end
-
-local function rgb_to_hsv(c)
-	local r, g, b = c[1] / 255, c[2] / 255, c[3] / 255
-	local max, min = math.max(r, g, b), math.min(r, g, b)
-	local d = max - min
-	if d <= 0 then
-		return 0, 0, max
-	end
-	local h = max == r and ((g - b) / d) % 6 or (max == g and (b - r) / d + 2 or (r - g) / d + 4)
-	return h * 60, d / max, max
-end
-
-local function mix(a, b, t)
-	return {
-		math.floor(a[1] * (1 - t) + b[1] * t + 0.5),
-		math.floor(a[2] * (1 - t) + b[2] * t + 0.5),
-		math.floor(a[3] * (1 - t) + b[3] * t + 0.5),
-	}
-end
-
---- Nudge a colour toward white or black so it reads as an accent on the current
---- polarity. Bounded: an unbounded correction to a target luminance turns a
---- vivid album colour into a pastel.
-local function adjust(c, light)
-	local l, target = luminance(c), light and 70 or 170
-	if math.abs(l - target) < 40 then
-		return c
-	end
-	local t = math.max(-0.35, math.min(0.35, (target - l) / 255))
-	return t >= 0 and mix(c, { 255, 255, 255 }, t) or mix(c, { 0, 0, 0 }, -t)
-end
-
---- Build the same role names from three album colours. Mirrors the daemon's
---- `derive(pal, dark)` so the two sources are interchangeable. The album hue
---- drives every surface; only saturation and the four lightness steps differ
---- between polarities.
-local function derive(pal, light)
-	local h, s = rgb_to_hsv(pal.primary)
-	local sat, fs = light and s * 0.25 or s * 0.45, light and s * 0.15 or s * 0.12
-	local bg = {}
-	for i, v in ipairs(light and { 0.975, 0.945, 0.910, 0.850 } or { 0.060, 0.090, 0.120, 0.170 }) do
-		bg[i] = hsv_to_rgb(h, sat, v)
-	end
-	local accent = rgb_int(adjust(pal.primary, light))
-
-	return {
-		bg0 = rgb_int(bg[1]),
-		bg1 = rgb_int(bg[2]),
-		bg2 = rgb_int(bg[3]),
-		bg3 = rgb_int(bg[4]),
-		sel_bg = rgb_int(mix(bg[1], pal.primary, 0.30)),
-		fg = rgb_int(hsv_to_rgb(h, fs, light and 0.16 or 0.90)),
-		fg_dim = rgb_int(hsv_to_rgb(h, fs, light and 0.44 or 0.60)),
-		accent = accent,
-		accent2 = rgb_int(adjust(pal.secondary, light)),
-		accent3 = rgb_int(adjust(pal.tertiary, light)),
-		cursor_line_nr = accent,
-	}
-end
-
---- Palette from a `reactive_palette` event. The fallback path only; three empty
---- strings mean the daemon had no art, which is a clear rather than a black
---- palette.
-function T.apply(ev)
-	if not T._enabled or type(ev) ~= "table" then
-		return
-	end
-	local p, s, t = from_hex(ev.primary), from_hex(ev.secondary), from_hex(ev.tertiary)
-	if not (p and s and t) then
-		return T.restore()
-	end
-	T._src, T._pal = "local", { primary = p, secondary = s, tertiary = t }
-	apply(derive(T._pal, vim.o.background ~= "light"))
-end
-
 --- The three accent colours behind the current tint, for `:Gtm theme`.
 function T.palette_hexes()
 	local function hx(n)
@@ -338,17 +227,12 @@ end
 --- colours are still applied would record the tint as the colorscheme's own and
 --- make a later restore a no-op. Then re-apply against the new background.
 function T.on_colorscheme()
-	if not T._enabled or not T._src then
+	if not T._enabled or not T._sets then
 		return
 	end
-	local src, pal = T._src, T._pal
 	T.restore()
 	T.snapshot()
-	if src == "daemon" then
-		pick()
-	elseif pal then
-		apply(derive(pal, vim.o.background ~= "light"))
-	end
+	pick()
 end
 
 return T

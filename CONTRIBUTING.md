@@ -15,8 +15,15 @@ TUI this plugin talks to. If you are looking for the player itself, start there.
   commands. There are no default keymaps; the README lists suggestions.
 - **Statusline integration** — one item list, a render function and a lualine
   component. Only the source marker and the state icon are on by default.
-- **Reactive theming** — the editor tinted from the album palette gtmd extracts,
+- **Reactive theming** — the editor tinted from a resolved role set gtmd pushes,
   on by default.
+
+Colours come from the daemon: `REACTIVE_TOKENS.md` in the
+[gtm](https://github.com/prjctimg/gtm) repo defines the `reactive_theme` event.
+**`theme.lua` contains no colour maths** — it picks a polarity and maps roles
+onto highlight groups. Do not add a derivation; two of them is how two clients
+end up rendering the same track differently. A gtmd without role sets tints
+nothing, which is correct.
 
 It is under a thousand lines of code. Anything with an interface — browsing,
 queues, search, downloads — belongs in the `gtm` TUI, not here. **Please open an

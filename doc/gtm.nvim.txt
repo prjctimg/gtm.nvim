@@ -144,8 +144,9 @@ client in agreement.
 Turn it off with `theme = { reactive = false }`. Add your own groups to the tint
 with `theme.extra_groups`.
 
-Against a gtmd older than the role-set event the plugin derives the same roles
-locally. `:checkhealth gtm` reports which path is live.
+The plugin derives nothing itself. Against a gtmd that predates role sets the
+editor stays untinted; `:checkhealth gtm` reports that rather than leaving you
+to wonder.
 
 ==============================================================================
 5. LUA API						*gtm.nvim-api*

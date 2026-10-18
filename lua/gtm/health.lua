@@ -76,15 +76,11 @@ local function theming()
 	end
 	local roles = theme.roles()
 	if not roles then
-		return H.warn("enabled, but no palette has arrived yet - the daemon extracts it from the cover art")
+		return H.warn("enabled, but no role set has arrived - this gtmd may predate reactive_theme")
 	end
 	local a, b, c = theme.palette_hexes()
 	H.ok(string.format("tinted: %s %s %s", a, b, c))
-	if theme.source() == "daemon" then
-		H.ok(string.format("colours resolved by gtmd (role set v%s)", tostring(theme.version())))
-	else
-		H.info("colours derived locally - this gtmd is older than the role-set event")
-	end
+	H.ok(string.format("role set v%s, resolved by gtmd", tostring(theme.version())))
 end
 
 function M.check()

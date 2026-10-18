@@ -200,29 +200,17 @@ gtm.opts.statusline = vim.deepcopy(defaults_statusline)
 ipc.status.source = nil
 check("no source field renders nothing", gtm.statusline() == "▶", vim.inspect(gtm.statusline()))
 
-print("\n[pulse events: fallback palette]")
+print("\n[pulse events: a bare palette tints nothing]")
 if push.client then
+	-- reactive_palette carries three hex strings. The plugin has no local
+	-- derivation left, so a daemon that sends only this tints nothing at all
+	-- rather than guessing colours the TUI would render differently.
 	local palette = frame("reactive_palette", fixstr("#3b6ea5"), fixstr("#d94f70"), fixstr("#7ec8a9"))
 	push.client:write(be32(#palette) .. palette)
-	vim.wait(1000, function()
-		return theme.roles() ~= nil
-	end, 20)
+	vim.wait(300)
+	check("a bare palette is ignored", theme.roles() == nil, vim.inspect(theme.roles()))
 
-	local roles = theme.roles()
-	check("palette derived locally", theme.source() == "local", tostring(theme.source()))
-	check("roles populated from 3 hex colours", roles ~= nil and roles.bg0 ~= nil and roles.accent ~= nil, vim.inspect(roles))
-	check("Normal takes the local bg0", vim.api.nvim_get_hl(0, { name = "Normal" }).bg == roles.bg0)
-	check("semantic groups untouched", vim.api.nvim_get_hl(0, { name = "Error" }).fg ~= nil)
-
-	-- An empty palette means "no art", which clears rather than tints black.
-	local empty = frame("reactive_palette", fixstr(""), fixstr(""), fixstr(""))
-	push.client:write(be32(#empty) .. empty)
-	vim.wait(1000, function()
-		return theme.roles() == nil
-	end, 20)
-	check("empty palette clears the tint", theme.roles() == nil)
-
-	-- A track end has to give the editor back too.
+	-- A track end has to give the editor back.
 	local ended = frame("track_ended")
 	push.client:write(be32(#ended) .. ended)
 	vim.wait(300)
@@ -258,10 +246,9 @@ if push.client then
 
 	push.client:write(roles_frame())
 	vim.wait(1000, function()
-		return theme.source() == "daemon"
+		return theme.roles() ~= nil
 	end, 20)
 
-	check("role set adopted from the daemon", theme.source() == "daemon", tostring(theme.source()))
 	check("token-set version recorded", theme.version() == 1, tostring(theme.version()))
 	check("dark polarity picked for a dark editor", theme.roles().bg0 == 0x0d0d12, vim.inspect(theme.roles().bg0))
 	check("Normal takes the daemon's bg0", vim.api.nvim_get_hl(0, { name = "Normal" }).bg == 0x0d0d12)
@@ -290,7 +277,11 @@ print("\n[theme restore]")
 -- The role-set checks above leave a tint up; drop it before taking the baseline.
 theme.restore()
 local pristine = vim.api.nvim_get_hl(0, { name = "Normal" })
-theme.apply({ primary = "#3b6ea5", secondary = "#d94f70", tertiary = "#7ec8a9" })
+theme.set_roles({
+	ver = 1,
+	dark = { bg0 = "#3b6ea5", bg1 = "#3b6ea5", bg2 = "#3b6ea5", bg3 = "#3b6ea5", sel_bg = "#3b6ea5", fg = "#e0e0e0", fg_dim = "#e0e0e0", cursor_line_nr = "#3b6ea5", accent = "#3b6ea5", accent2 = "#3b6ea5", accent3 = "#3b6ea5" },
+	light = { bg0 = "#f6f4f1", bg1 = "#f6f4f1", bg2 = "#f6f4f1", bg3 = "#f6f4f1", sel_bg = "#f6f4f1", fg = "#1a1a1a", fg_dim = "#1a1a1a", cursor_line_nr = "#9c3b52", accent = "#9c3b52", accent2 = "#9c3b52", accent3 = "#9c3b52" },
+})
 check("tint re-applied", theme.roles() ~= nil)
 theme.restore()
 check("Normal restored exactly", vim.deep_equal(pristine, vim.api.nvim_get_hl(0, { name = "Normal" })))
@@ -315,6 +306,14 @@ check("tint survives a colorscheme swap", theme.roles() ~= nil)
 theme.restore()
 local now = vim.api.nvim_get_hl(0, { name = "Normal" })
 check("restore still returns the pristine colour", vim.deep_equal(pristine, now))
+check("restore keeps the role sets so a re-pick is possible", theme.version() == 1)
+
+-- A reset must forget them, or the next colorscheme change resurrects a tint
+-- the user just turned off.
+theme.set_roles(role_set("#0d0d12", "#e0e0e0", "#3b6ea5"))
+vim.cmd("Gtm theme reset")
+theme.on_colorscheme()
+check("a reset is not resurrected by a colorscheme change", theme.roles() == nil, vim.inspect(theme.roles()))
 
 print("\n[commands]")
 check("Gtm command registered", vim.fn.exists(":Gtm") == 2)
@@ -338,7 +337,11 @@ check("every subcommand runs", #broken == 0, table.concat(broken, " | "))
 
 -- `:Gtm theme` is the one that reads back the live tint; a nil helper here is
 -- invisible until a user runs it.
-theme.apply({ primary = "#3b6ea5", secondary = "#d94f70", tertiary = "#7ec8a9" })
+theme.set_roles({
+	ver = 1,
+	dark = { bg0 = "#3b6ea5", bg1 = "#3b6ea5", bg2 = "#3b6ea5", bg3 = "#3b6ea5", sel_bg = "#3b6ea5", fg = "#e0e0e0", fg_dim = "#e0e0e0", cursor_line_nr = "#3b6ea5", accent = "#3b6ea5", accent2 = "#3b6ea5", accent3 = "#3b6ea5" },
+	light = { bg0 = "#f6f4f1", bg1 = "#f6f4f1", bg2 = "#f6f4f1", bg3 = "#f6f4f1", sel_bg = "#f6f4f1", fg = "#1a1a1a", fg_dim = "#1a1a1a", cursor_line_nr = "#9c3b52", accent = "#9c3b52", accent2 = "#9c3b52", accent3 = "#9c3b52" },
+})
 local real_notify = vim.notify
 local function capture(...)
 	local seen = {}

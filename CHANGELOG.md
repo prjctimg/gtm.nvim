@@ -27,10 +27,8 @@ This is free software released under the GPL-3.0 license.
   is worse than no ramp. `:checkhealth gtm` reports which source is live.
 
   This is the client half of `REACTIVE_TOKENS.md` in the
-  [gtm repo](https://github.com/prjctimg/gtm). Against an older gtmd the plugin
-  behaves exactly as before, deriving the same roles locally from the three
-  palette colours; that fallback is transitional and will be removed once role
-  sets are deployed.
+  [gtm repo](https://github.com/prjctimg/gtm). There is no local derivation:
+  against a gtmd that predates role sets the editor stays untinted.
 
 - `:checkhealth gtm`, covering requirements, both socket connections and
   heartbeat freshness, status snapshot staleness, and whether a palette is
@@ -67,6 +65,20 @@ This is free software released under the GPL-3.0 license.
 
 ### Removed
 
+- **Breaking.** The local palette derivation in `theme.lua` (79 lines of
+  `hsv_to_rgb`/`rgb_to_hsv`/`mix`/`adjust`), along with the `reactive_palette`
+  subscription that fed it. gtmd owns the colours outright: a client maps roles
+  onto groups and does no arithmetic, which is what keeps this plugin, the TUI
+  and future clients rendering the same track identically.
+
+  A gtmd that predates `reactive_theme` now leaves the editor untinted rather
+  than deriving its own ramp. That is deliberate — a second derivation is the
+  problem, not the solution — but it does mean theming requires the role-set
+  daemon.
+- `theme.source()`, `theme.roles()`'s `"local"` mode, and the `"derived
+  locally"` branch in `:checkhealth gtm`.
+
+
 - **Breaking.** The feature set is reduced to playback control, statusline
   integration and reactive theming. Everything else reimplemented the `gtm` TUI
   and has been removed rather than maintained:
@@ -80,7 +92,7 @@ This is free software released under the GPL-3.0 license.
   | Equalizer control (`:Gtm eq`) | The TUI |
   | Favourites, queue and playlist commands | The TUI |
 
-  The plugin is ~994 lines of code, down from ~1330.
+  The plugin is ~872 lines of code, down from ~1330.
 
 - `opts.float` (width, height, border, cover_art) and `opts.keymaps.float`.
 - `opts.theme.scope` — with no float left, the tint is always global.
@@ -99,6 +111,11 @@ This is free software released under the GPL-3.0 license.
   title.
 
 ### Fixed
+
+- `restore()` was clearing the stored role sets, so a colorscheme change could
+  not re-pick a polarity. `restore()` now keeps them and a new `clear()` — which
+  is what `:Gtm theme reset` and playback-stopped call — drops them, so a reset
+  is not resurrected by the next `:colorscheme`.
 
 - **Reactive theming never actually worked.** `theme.snapshot()` called
   `vim.api.nvim_get_names()`, which is not a Neovim API, and the derived ramp

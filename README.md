@@ -117,7 +117,11 @@ A few things worth knowing:
 - A track with no cover art never tints. That is the daemon's call to make, not the plugin's.
 - Turn it off with `theme = { reactive = false }`.
 
-`:checkhealth gtm` reports which colour source is live: resolved by gtmd (with the role-set version), or derived locally because your gtmd predates the role-set event.
+It needs a gtmd that sends role sets. Against an older daemon the editor stays
+untinted — deliberately, since a second derivation is how two clients end up
+rendering the same track differently.
+
+The plugin derives nothing. If your gtmd predates role sets, `:checkhealth gtm` says so and the editor simply stays untinted rather than guessing colours the TUI would render differently.
 
 ## Commands
 

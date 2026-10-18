@@ -67,15 +67,15 @@ mapping is one line, and the README lists the suggestions.
 
 ## Colour ownership
 
-gtmd resolves the reactive colours, not the plugin. The plan is
-`REACTIVE_TOKENS.md` in the [gtm](https://github.com/prjctimg/gtm) repo: a
-`reactive_theme` event carrying a resolved role→colour set for both polarities,
-so this plugin, the TUI and future clients agree.
+gtmd resolves the reactive colours, not the plugin: `REACTIVE_TOKENS.md` in the
+[gtm](https://github.com/prjctimg/gtm) repo defines a `reactive_theme` event
+carrying a resolved role→colour set for both polarities, so this plugin, the TUI
+and future clients agree.
 
-`theme.lua` holds no arithmetic on the daemon path — only a name→role table.
-The local derivation in the same file is a **fallback** for daemons predating
-the event, emits identical role names so `apply` has one path, and is planned
-for deletion once the event is widely deployed. Do not add maths to it.
+**`theme.lua` contains no colour maths.** It picks a polarity and maps roles
+onto highlight groups. There is no local derivation and there must not be one
+again — two derivations is exactly how two clients end up rendering the same
+track differently. A daemon without role sets tints nothing, which is correct.
 
 A role set missing any role in `NEED` is ignored outright: a half-applied ramp
-is worse than the fallback.
+is worse than no ramp.

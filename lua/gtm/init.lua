@@ -178,11 +178,6 @@ local HANDLERS = {
 	repeat_mode_changed = function(ev)
 		ipc.patch("repeat", (ev.mode or ""):lower())
 	end,
-	-- Fallback path: three hex strings, only from a daemon too old to send
-	-- resolved role sets. `apply` clears the tint when they are empty, which is
-	-- the daemon saying it had no art rather than that the art is black.
-	reactive_palette = theme.apply,
-	-- Preferred path: gtmd resolved the whole ramp and sends both polarities.
 	reactive_theme = theme.set_roles,
 }
 
