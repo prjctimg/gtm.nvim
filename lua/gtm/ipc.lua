@@ -104,8 +104,8 @@ function I.disconnect()
 	pending = {}
 end
 
---- Forget the track without touching the socket: a track ended and no new
---- snapshot has arrived yet, so the clock must not keep advancing from it.
+--- Forget the track: a track ended and no new snapshot has arrived, so the
+--- clock must not keep advancing from it.
 function I.clear()
 	I.status, base_pos, duration = nil, 0, 0
 	updated = hrtime()
@@ -278,14 +278,10 @@ function I.patch(key, value)
 	end
 end
 
-function I.playing()
-	return I.status ~= nil and I.status.status == "playing"
-end
-
 --- Position in seconds, advanced locally from the last transition.
 function I.position()
 	local pos = base_pos
-	if I.playing() then
+	if I.status and I.status.status == "playing" then
 		pos = pos + (hrtime() - base_time) / 1e9
 	end
 	return math.max(0, duration > 0 and math.min(pos, duration) or pos)

@@ -54,9 +54,14 @@ This is free software released under the GPL-3.0 license.
 - **Breaking.** No keymaps are set by default. The six previous defaults are
   commented out in `plugin_spec.lua` and listed as suggestions in the README.
 - Reactive theming now defaults to on. `:Gtm theme reset` still turns it off.
-- `statusline.source` renders a playback-source marker (`♫` local, `◉`
-  spotify, `☁` radio, `❋` podcast, `▤` chart). It stays empty until gtmd reports
-  a source — see `PLAYBACK_SOURCE.md` in the gtm repo.
+- `statusline.source` renders a playback-source marker, and `statusline.icons`
+  makes the marker set configurable. Defaults are Nerd Font codepoints from
+  Material Design Icons — `md-spotify` U+F04C7, `md-radio` U+F0439,
+  `md-podcast` U+F0994, `md-folder_music` U+F1359, `md-chart_line` U+F012A — with
+  a plain-Unicode set documented in the README and help for terminals with no
+  patched font. A source gtmd does not name renders nothing rather than guessing.
+  It stays empty until gtmd reports a source at all — see `PLAYBACK_SOURCE.md`
+  in the gtm repo.
 - Bare `:Gtm repeat` cycles off → one → all instead of forcing `all`. An
   explicit mode still sets it directly.
 

@@ -108,24 +108,17 @@ function T.setup(opts)
 	T.snapshot()
 end
 
-function T.enabled()
-	return T._enabled
-end
+--- Whether reactive theming is on at all.
+function T.enabled() return T._enabled end
 
 --- Where the active colours came from: `"daemon"`, `"local"`, or nil.
-function T.source()
-	return T._src
-end
+function T.source() return T._src end
 
 --- Token-set version the daemon advertised, or nil when deriving locally.
-function T.version()
-	return T._ver
-end
+function T.version() return T._ver end
 
 --- The active role set (role -> 0xRRGGBB), or nil when nothing is tinted.
-function T.roles()
-	return T._roles
-end
+function T.roles() return T._roles end
 
 --- Put every group the palette touched back to its snapshot value.
 function T.restore()

@@ -64,6 +64,28 @@ The statusline is a list of items you turn on. By default only the source marker
 
 Items render in the order above. An item with nothing to show is skipped, so the empty state is just `⏹` rather than a row of zeroes.
 
+### Source icons
+
+`statusline.source` shows a marker for where the audio came from, using [Nerd Font](https://www.nerdfonts.com/) codepoints from Material Design Icons:
+
+| Source | Glyph | Codepoint |
+|---|---|---|
+| spotify | `md-spotify` | U+F04C7 |
+| radio | `md-radio` | U+F0439 |
+| podcast | `md-podcast` | U+F0994 |
+| local | `md-folder_music` | U+F1359 |
+| chart | `md-chart_line` | U+F012A |
+
+A source your `gtmd` doesn't name renders nothing rather than guessing.
+
+**No Nerd Font?** Those are private-use codepoints and will show as empty boxes. Paste the plain-Unicode set instead — it needs no patched font:
+
+```lua
+icons = { spotify = "◉", radio = "☁", podcast = "❋", local = "♫", chart = "▤" },
+```
+
+You can override just the ones you like; the rest keep their defaults.
+
 lualine:
 
 ```lua

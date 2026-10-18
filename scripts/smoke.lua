@@ -169,6 +169,37 @@ ipc.clear()
 check("empty state is the stop icon alone", gtm.statusline() == "⏹", vim.inspect(gtm.statusline()))
 ipc.set_status({ status = "Playing", volume = 80, time_pos = 10, duration = 200, current_track = { artist = "Aphex Twin", title = "Xtal", album = "SAW", duration = 200 } })
 
+print("\n[source icons]")
+-- Nerd Font codepoints are UTF-8 encoded literals, not \u escapes: LuaJIT
+-- parses \u{...} without error and yields the wrong bytes.
+local icons = gtm.opts.statusline.icons
+local EXPECT = {
+	spotify = "\xf3\xb0\x93\x87", -- md-spotify      U+F04C7
+	radio = "\xf3\xb0\x90\xb9", -- md-radio        U+F0439
+	podcast = "\xf3\xb0\xa6\x94", -- md-podcast      U+F0994
+	["local"] = "\xf3\xb1\x8d\x99", -- md-folder_music U+F1359
+	chart = "\xf3\xb0\x84\xaa", -- md-chart_line   U+F012A
+}
+local wrong = {}
+for src, want in pairs(EXPECT) do
+	ipc.status.source = src
+	local got = gtm.statusline()
+	if not got:find(want, 1, true) then
+		wrong[#wrong + 1] = src .. " (" .. vim.inspect(icons[src]) .. ")"
+	end
+end
+check("each source renders its codepoint", #wrong == 0, table.concat(wrong, ", "))
+
+ipc.status.source = "navidrome"
+check("an unknown source renders nothing", gtm.statusline() == "▶", vim.inspect(gtm.statusline()))
+
+icons.radio = "R"
+ipc.status.source = "radio"
+check("icons are overridable", gtm.statusline() == "R ▶", vim.inspect(gtm.statusline()))
+gtm.opts.statusline = vim.deepcopy(defaults_statusline)
+ipc.status.source = nil
+check("no source field renders nothing", gtm.statusline() == "▶", vim.inspect(gtm.statusline()))
+
 print("\n[pulse events: fallback palette]")
 if push.client then
 	local palette = frame("reactive_palette", fixstr("#3b6ea5"), fixstr("#d94f70"), fixstr("#7ec8a9"))

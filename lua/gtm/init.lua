@@ -2,10 +2,8 @@
 -- Author: prjctimg <prjctimg@outlook.com>
 -- gtm.nvim: Neovim wrapper for the GTM daemon
 --
--- Three things and nothing else: playback control, a statusline, and reactive
--- theming driven by the album art the daemon already extracted. Any window,
--- list or picker belongs to gtmd and its TUI, not to a plugin that has to stay
--- small enough to read in one sitting.
+-- Playback control, a statusline, and reactive theming. No windows: those belong
+-- to gtmd and its TUI.
 --
 -- This is free software released under the GPL-3.0 license.
 
@@ -31,6 +29,16 @@ local defaults = {
 		volume = false,
 		["repeat"] = false,
 		shuffle = false,
+		-- Source markers: Nerd Font, Material Design Icons in the Plane 15 PUA, so
+		-- four UTF-8 bytes each and four \x escapes. README has the plain-Unicode
+		-- set for terminals with no patched font.
+		icons = {
+			spotify = "\xf3\xb0\x93\x87", -- md-spotify      U+F04C7
+			radio = "\xf3\xb0\x90\xb9", -- md-radio        U+F0439
+			podcast = "\xf3\xb0\xa6\x94", -- md-podcast      U+F0994
+			["local"] = "\xf3\xb1\x8d\x99", -- md-folder_music U+F1359
+			chart = "\xf3\xb0\x84\xaa", -- md-chart_line   U+F012A
+		},
 	},
 	theme = { reactive = true, extra_groups = {} },
 	keymaps = {},
@@ -88,11 +96,6 @@ end
 
 local ICON = { playing = "▶", paused = "⏸", stopped = "⏹" }
 
---- Playback-source markers. A value gtmd adds later is simply absent here and
---- renders as nothing, which is why this is a table rather than a fallback chain.
---- See PLAYBACK_SOURCE.md in the gtm repo.
-local SOURCE_ICON = { ["local"] = "♫", spotify = "◉", radio = "☁", podcast = "❋", chart = "▤" }
-
 local function fmt_time(secs)
 	return string.format("%02d:%02d", math.floor(secs / 60), math.floor(secs % 60))
 end
@@ -109,7 +112,8 @@ function G.statusline()
 		end
 	end
 
-	add(on.source and s and SOURCE_ICON[s.source])
+	-- A source gtmd has not named yet renders as nothing rather than guessing.
+	add(on.source and s and on.icons[s.source])
 	add(on.state and (ICON[s and s.status] or "⏹"))
 
 	if t then

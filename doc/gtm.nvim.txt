@@ -65,6 +65,27 @@ state icon are on by default; everything else is opt-in. >
 Items render in the order above. One with nothing to show is skipped, so the
 empty state is just `⏹` rather than a row of zeroes.
 
+Source icons ~
+`statusline.source` shows a marker for where the audio came from, using Nerd
+Font codepoints from Material Design Icons: >
+  spotify = md-spotify      U+F04C7
+  radio   = md-radio        U+F0439
+  podcast = md-podcast      U+F0994
+  local   = md-folder_music U+F1359
+  chart   = md-chart_line   U+F012A
+<
+A source your gtmd does not name renders nothing rather than guessing.
+
+Those are private-use codepoints: without a patched font they show as empty
+boxes. Paste the plain-Unicode set into `statusline.icons` to replace them — it
+needs no patched font: >
+  icons = {
+    spotify = "◉", radio = "☁", podcast = "❋",
+    local = "♫", chart = "▤",
+  },
+<
+Override only the ones you like; the rest keep their defaults.
+
 lualine: >
   require("lualine").setup({
     sections = { lualine_x = { require("gtm").lualine_component() } },

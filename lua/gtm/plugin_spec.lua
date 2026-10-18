@@ -24,6 +24,15 @@ return {
 			volume = false,
 			["repeat"] = false,
 			shuffle = false,
+			-- Source markers: Nerd Font, Material Design Icons (Plane 15 PUA).
+			-- Override with plain Unicode if your terminal has no patched font.
+			icons = {
+				spotify = "\xf3\xb0\x93\x87", -- md-spotify      U+F04C7
+				radio = "\xf3\xb0\x90\xb9", -- md-radio        U+F0439
+				podcast = "\xf3\xb0\xa6\x94", -- md-podcast      U+F0994
+				["local"] = "\xf3\xb1\x8d\x99", -- md-folder_music U+F1359
+				chart = "\xf3\xb0\x84\xaa", -- md-chart_line   U+F012A
+			},
 		},
 		theme = { reactive = true, extra_groups = {} },
 		-- No keymaps by default. Suggestions are in the README; copy the ones
