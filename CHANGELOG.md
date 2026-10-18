@@ -41,15 +41,24 @@ This is free software released under the GPL-3.0 license.
 - `scripts/checkrefs.lua`, which resolves every cross-module call in `init.lua`
   and `health.lua` against the modules as loaded. A renamed helper that one
   caller missed now fails at push rather than at a user's keyboard.
+- `:Gtm repeat` with no argument cycles the repeat mode.
 
 ### Changed
 
-- The hand-rolled MessagePack decoder (`gtm/msgpack.lua`, 475 lines) and the
-  separate event layer (`gtm/events.lua`) are merged into `gtm/pulse.lua`.
-  Frames are still peeked by tag and unrecognised ones dropped without being
-  decoded, so 60 Hz telemetry costs nothing — but the frames that *are* wanted
-  are now decoded by `vim.mpack`, which ships with Neovim.
-- `theme.extra_groups` now tints groups in the global scope only.
+- **Breaking.** `statusline_format = "compact" | "detailed"` is replaced by a
+  per-item table. The default now renders only the source marker and the state
+  icon; artist, title, album, progress, time, volume, repeat and shuffle are
+  opt-in, so nothing is squeezed into the statusline without asking. Items with
+  no data are skipped, which makes the empty state a bare `⏹`. A 0.1.x
+  `statusline_format` is still accepted and mapped onto the new table.
+- **Breaking.** No keymaps are set by default. The six previous defaults are
+  commented out in `plugin_spec.lua` and listed as suggestions in the README.
+- Reactive theming now defaults to on. `:Gtm theme reset` still turns it off.
+- `statusline.source` renders a playback-source marker (`♫` local, `◉`
+  spotify, `☁` radio, `❋` podcast, `▤` chart). It stays empty until gtmd reports
+  a source — see `PLAYBACK_SOURCE.md` in the gtm repo.
+- Bare `:Gtm repeat` cycles off → one → all instead of forcing `all`. An
+  explicit mode still sets it directly.
 
 ### Removed
 
@@ -66,7 +75,7 @@ This is free software released under the GPL-3.0 license.
   | Equalizer control (`:Gtm eq`) | The TUI |
   | Favourites, queue and playlist commands | The TUI |
 
-  The plugin is ~1050 lines of code, down from ~1330.
+  The plugin is ~994 lines of code, down from ~1330.
 
 - `opts.float` (width, height, border, cover_art) and `opts.keymaps.float`.
 - `opts.theme.scope` — with no float left, the tint is always global.
@@ -75,6 +84,14 @@ This is free software released under the GPL-3.0 license.
 - Daemon auto-start. `gtm.nvim` used to spawn `gtmd` when no socket was found.
   A plugin silently starting a server process is not its call to make, so it now
   notifies instead. Start `gtmd` yourself.
+- `:Gtm disconnect`. `:checkhealth gtm` reports connection state and reconnection
+  gives up after 30 attempts, so a command to drop the socket by hand was a
+  debug hatch rather than a feature.
+- `duration_changed` handling. It patched `status.duration`, which nothing read
+  — every duration read goes through the extrapolated clock in `gtm.ipc`.
+- `radio_title_changed` handling. Internet radio therefore shows the title that
+  arrived with `playback_started` and does not update to the stream's real
+  title.
 
 ### Fixed
 

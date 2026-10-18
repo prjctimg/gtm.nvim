@@ -127,13 +127,47 @@ check(string.format("position extrapolates past the anchor (%.1fs)", pos), pos >
 
 print("\n[statusline]")
 vim.cmd("redrawstatus")
-check("compact format", gtm.statusline():find("Aphex Twin %- Xtal") ~= nil, gtm.statusline())
-check("compact includes volume", gtm.statusline():find("vol:80%%") ~= nil)
-check("lualine component is a table", type(gtm.lualine_component()) == "table")
-check("lualine visible while connected", gtm.lualine_component().cond() == true)
-gtm.opts.statusline_format = "detailed"
-check("detailed format", gtm.statusline():find("%[") ~= nil, gtm.statusline())
-gtm.opts.statusline_format = "compact"
+
+-- Defaults: the source marker and the state icon only.
+check("default renders the state icon alone", gtm.statusline() == "▶", vim.inspect(gtm.statusline()))
+check("default hides artist and title", not gtm.statusline():find("Aphex"))
+check("default hides volume", not gtm.statusline():find("vol:"))
+check("default sets no keymaps", next(gtm.opts.keymaps) == nil)
+
+-- Opt-in items, each independent.
+local defaults_statusline = vim.deepcopy(gtm.opts.statusline)
+local function with(opts)
+	gtm.opts.statusline = vim.tbl_extend("force", gtm.opts.statusline, opts)
+	local out = gtm.statusline()
+	gtm.opts.statusline = vim.deepcopy(defaults_statusline)
+	return out
+end
+
+check("artist is opt-in", with({ artist = true }):find("Aphex Twin") ~= nil)
+check("title is opt-in", with({ title = true }):find("Xtal") ~= nil)
+check("volume is opt-in", with({ volume = true }):find("vol:80%%") ~= nil)
+check("time is opt-in", with({ time = true }):find("%[%d%d:%d%d/%d%d:%d%d%]") ~= nil)
+check("progress is opt-in", with({ progress = true }):find("━") ~= nil)
+check("repeat is opt-in and off by default", with({ ["repeat"] = true }) == "▶", with({ ["repeat"] = true }))
+check("album is opt-in", with({ album = true }):find("SAW") ~= nil)
+
+-- lualine renders exactly what statusline() renders — one path, no format split.
+local component = gtm.lualine_component()
+check("lualine component is a table", type(component) == "table")
+check("lualine visible while connected", component.cond() == true)
+check("lualine renders the same as statusline()", component[1]() == gtm.statusline())
+
+-- 0.1.x compatibility: a statusline_format config maps onto the item table.
+local migrated = require("gtm").setup({ statusline_format = "compact" }).opts.statusline
+check("statusline_format=compact migrates to off", migrated.artist == false and migrated.state == true, vim.inspect(migrated))
+local migrated_dense = require("gtm").setup({ statusline_format = "detailed" }).opts.statusline
+check("statusline_format=detailed migrates to on", migrated_dense.artist == true and migrated_dense.volume == true, vim.inspect(migrated_dense))
+gtm.opts.statusline = vim.deepcopy(defaults_statusline)
+
+-- Empty state is a bare stop icon, whatever is enabled.
+ipc.clear()
+check("empty state is the stop icon alone", gtm.statusline() == "⏹", vim.inspect(gtm.statusline()))
+ipc.set_status({ status = "Playing", volume = 80, time_pos = 10, duration = 200, current_track = { artist = "Aphex Twin", title = "Xtal", album = "SAW", duration = 200 } })
 
 print("\n[pulse events: fallback palette]")
 if push.client then
@@ -261,7 +295,7 @@ check("subcommand completion", has_sub, vim.inspect(completions))
 
 -- Every subcommand runs without raising. This is the surface that broke when a
 -- helper was renamed under one caller and not another.
-local subcommands = { "play", "next", "prev", "stop", "volup", "voldown", "mute", "shuffle", "status", "theme", "seek 30", "repeat one", "theme reset" }
+local subcommands = { "play", "next", "prev", "stop", "volup", "voldown", "mute", "shuffle", "status", "theme", "seek 30", "repeat one", "repeat", "theme reset" }
 local broken = {}
 for _, sub in ipairs(subcommands) do
 	local ok, err = pcall(vim.cmd, "Gtm " .. sub)

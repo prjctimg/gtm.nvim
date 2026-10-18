@@ -10,16 +10,31 @@ return {
 	event = "VeryLazy",
 	cmd = "Gtm",
 	opts = {
-		statusline_format = "compact", -- "compact" | "detailed"
 		resync_interval = 30000,
-		theme = { reactive = false, extra_groups = {} },
+		-- Statusline items, rendered in table order. Default shows the source
+		-- marker and the state icon; the rest are opt-in.
+		statusline = {
+			source = true,
+			state = true,
+			artist = false,
+			title = false,
+			album = false,
+			progress = false,
+			time = false,
+			volume = false,
+			["repeat"] = false,
+			shuffle = false,
+		},
+		theme = { reactive = true, extra_groups = {} },
+		-- No keymaps by default. Suggestions are in the README; copy the ones
+		-- you want.
 		keymaps = {
-			play_pause = "<leader>gp",
-			next = "<leader>gn",
-			prev = "<leader>gN",
-			volume_up = "<leader>g>",
-			volume_down = "<leader>g<",
-			stop = "<leader>gS",
+			-- play_pause = "<leader>gp",
+			-- next = "<leader>gn",
+			-- prev = "<leader>gN",
+			-- volume_up = "<leader>g>",
+			-- volume_down = "<leader>g<",
+			-- stop = "<leader>gS",
 		},
 	},
 	config = function(_, opts)

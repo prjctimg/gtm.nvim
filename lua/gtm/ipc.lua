@@ -84,6 +84,14 @@ function I.connect(path, hook)
 	end
 end
 
+local function stop_retry()
+	if retry_timer then
+		retry_timer:stop()
+		retry_timer:close()
+		retry_timer = nil
+	end
+end
+
 function I.disconnect()
 	stop_retry()
 	if I.sock then
@@ -101,15 +109,6 @@ end
 function I.clear()
 	I.status, base_pos, duration = nil, 0, 0
 	updated = hrtime()
-end
-
---- Run `hook` after every (re)connect, once the snapshot has been primed.
-local function stop_retry()
-	if retry_timer then
-		retry_timer:stop()
-		retry_timer:close()
-		retry_timer = nil
-	end
 end
 
 function I._open()

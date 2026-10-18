@@ -7,8 +7,8 @@ License: GPL-3.0
 CONTENTS					*gtm.nvim-contents*
 
   1. Setup ..................... |gtm.nvim-setup|
-  2. Commands .................. |gtm.nvim-commands|
-  3. Statusline ................ |gtm.nvim-statusline|
+  2. Statusline ................ |gtm.nvim-statusline|
+  3. Commands .................. |gtm.nvim-commands|
   4. Reactive theming .......... |gtm.nvim-theme|
   5. Lua API ................... |gtm.nvim-api|
   6. Configuration ............. |gtm.nvim-config|
@@ -26,14 +26,62 @@ lazy.nvim: >
   { "prjctimg/gtm.nvim", opts = {} }
 <
 Manual: >
-  require("gtm").setup({ statusline_format = "compact" })
+  require("gtm").setup({})
 <
 There are no dependencies, optional or otherwise. `setup()` is idempotent: it
 can be called repeatedly (config reload, or alongside a plugin manager) without
 duplicating sockets, event handlers or commands.
 
+No keymaps are set by default. Bind the ones you want: >
+  require("gtm").setup({
+    keymaps = {
+      play_pause = "<leader>gp",
+      next = "<leader>gn",
+      prev = "<leader>gN",
+      volume_up = "<leader>g>",
+      volume_down = "<leader>g<",
+      stop = "<leader>gS",
+    },
+  })
+<
 ==============================================================================
-2. COMMANDS					*gtm.nvim-commands*
+2. STATUSLINE					*gtm.nvim-statusline*
+
+The statusline is a list of items you turn on. Only the source marker and the
+state icon are on by default; everything else is opt-in. >
+  statusline = {
+    source = true,    -- ♫ Spotify ◉ radio ☁ podcast ❋ chart ▤
+    state = true,     -- ▶ ⏸ ⏹
+    artist = false,
+    title = false,
+    album = false,
+    progress = false, -- ━━━━━ 20 columns
+    time = false,     -- [01:23/04:56]
+    volume = false,   -- vol:80%
+    repeat = false,   -- [R]
+    shuffle = false,  -- [S]
+  },
+<
+Items render in the order above. One with nothing to show is skipped, so the
+empty state is just `⏹` rather than a row of zeroes.
+
+lualine: >
+  require("lualine").setup({
+    sections = { lualine_x = { require("gtm").lualine_component() } },
+  })
+<
+Any statusline: >
+  vim.o.statusline = "%{%v:lua.require'gtm'.statusline()%}"
+<
+The component hides itself while the daemon is unreachable. The position clock
+advances locally between daemon events, so the progress bar never waits on the
+socket.
+
+`statusline.source` renders nothing until gtmd reports a playback source; see
+PLAYBACK_SOURCE.md in the gtm repo.
+
+==============================================================================
+3. COMMANDS					*gtm.nvim-commands*
 
 Playback:~
   :Gtm play              Toggle play/pause.
@@ -45,6 +93,7 @@ Playback:~
   :Gtm mute              Toggle mute.
   :Gtm seek {secs}       Seek to position in seconds.
   :Gtm shuffle           Toggle shuffle.
+  :Gtm repeat            Cycle repeat: off -> one -> all -> off.
   :Gtm repeat {mode}     Set repeat mode: off|one|all.
 
 Status:~
@@ -54,63 +103,28 @@ Reactive theming: >
   :Gtm theme             Print the active palette as hex values.
   :Gtm theme reset       Clear the tint and restore the previous colors.
 <
-Connection:~
-  :Gtm disconnect        Drop both sockets and stop reconnecting.
-
-Default keymaps, all remappable through `opts.keymaps`: >
-  <Leader>gp             Play / pause
-  <Leader>gn             Next track
-  <Leader>gN             Previous track
-  <Leader>g>             Volume up
-  <Leader>g<             Volume down
-  <Leader>gS             Stop
-<
-==============================================================================
-3. STATUSLINE					*gtm.nvim-statusline*
-
-lualine: >
-  require("lualine").setup({
-    sections = { lualine_x = { require("gtm").lualine_component() } },
-  })
-<
-Anything else: >
-  vim.o.statusline = "%{%v:lua.require'gtm'.statusline()%}"
-<
-`opts.statusline_format` picks the rendering: >
-  "compact"   artist - title ▶ vol:80% ━━━━━━━━━━━━━━━━━━━━
-  "detailed"  ▶ Artist - Title (Album) [01:23/04:56] vol:80% [R] [S]
-<
-The component hides itself while the daemon is unreachable. The position clock
-advances locally between daemon events, so the progress bar never waits on the
-socket.
-
 ==============================================================================
 4. REACTIVE THEMING					*gtm.nvim-theme*
 
-With `opts.theme.reactive = true` the editor takes on the colours of the album
-currently playing. gtmd extracts the palette from the cover art and broadcasts
-it; this plugin never decodes an image.
+On by default. The editor takes on the colours of the album currently playing.
+gtmd extracts the palette from the cover art and broadcasts a resolved role set;
+this plugin never decodes an image and performs no colour arithmetic. It only
+maps roles onto highlight groups, which keeps it, the gtm TUI, and any other
+client in agreement.
 
   - The tint is kept while playback is paused and dropped only when playback
     stops or the track ends.
   - Semantic groups (Error, Warning, Diff, Spell, Todo, diagnostics, gitSigns)
     keep their colorscheme colours.
-  - Changing colorscheme mid-track re-picks light or dark and re-tints rather
-    than losing the palette.
+  - Changing colorscheme mid-track re-picks light or dark and re-tints.
   - A track with no cover art never tints.
   - `:Gtm theme reset` restores every group to exactly its prior value.
 
-Add your own groups to the tint with `opts.theme.extra_groups`.
+Turn it off with `theme = { reactive = false }`. Add your own groups to the tint
+with `theme.extra_groups`.
 
-Colour ownership ~
-A gtmd new enough to send resolved role sets computes the whole ramp itself and
-pushes it as `bg0`, `fg`, `accent`, and the rest. The plugin only maps roles onto
-highlight groups, so it performs no colour arithmetic and stays consistent with
-the gtm TUI and any other client.
-
-Against an older gtmd the plugin falls back to deriving the same roles locally
-from the three palette colours. `:checkhealth gtm` reports which path is live
-and the role-set version when the daemon resolved them.
+Against a gtmd older than the role-set event the plugin derives the same roles
+locally. `:checkhealth gtm` reports which path is live.
 
 ==============================================================================
 5. LUA API						*gtm.nvim-api*
@@ -122,12 +136,13 @@ Playback~
   require("gtm").stop()            Stop.
   require("gtm").mute()            Toggle mute.
   require("gtm").shuffle()         Toggle shuffle.
-  require("gtm").cycle_repeat(m)   Set repeat: "off"|"one"|"all".
+  require("gtm").cycle_repeat(m)   Set repeat: "off"|"one"|"all". No argument
+                                  cycles through them.
   require("gtm").seek(secs)        Seek to a position in seconds.
   require("gtm").set_volume(d)     Nudge the volume by a delta.
 
 Statusline~
-  require("gtm").statusline()        Render using the configured format.
+  require("gtm").statusline()        Render the enabled items.
   require("gtm").lualine_component()  lualine component table.
 
 Note: `repeat` is a Lua keyword, so the public entry point is
@@ -138,27 +153,24 @@ Note: `repeat` is a Lua keyword, so the public entry point is
 
 Defaults: >
   {
-    socket_path = nil,       -- default: auto-resolved like gtmd does
-    statusline_format = "compact",
     resync_interval = 30000, -- ms between get_status_lite resyncs
-    theme = {
-      reactive = false,
-      extra_groups = {},
+    statusline = {
+      source = true, state = true,
+      artist = false, title = false, album = false, progress = false,
+      time = false, volume = false, repeat = false, shuffle = false,
     },
-    keymaps = {
-      play_pause = "<leader>gp",
-      next = "<leader>gn",
-      prev = "<leader>gN",
-      volume_up = "<leader>g>",
-      volume_down = "<leader>g<",
-      stop = "<leader>gS",
-    },
+    theme = { reactive = true, extra_groups = {} },
+    keymaps = {},
   }
 <
-`socket_path` overrides the socket search order, which otherwise matches
-gtmd's own: `$XDG_RUNTIME_DIR/gtm/gtmd.sock`, `/tmp/gtm-$USER/gtm/gtmd.sock`,
+`socket_path` overrides the socket search order, which otherwise matches gtmd's
+own: `$XDG_RUNTIME_DIR/gtm/gtmd.sock`, `/tmp/gtm-$USER/gtm/gtmd.sock`,
 `$TMPDIR/gtm/gtmd.sock`, then `~/.gtm/gtm/gtmd.sock`. The plugin does not start
 the daemon for you.
+
+A 0.1.x `statusline_format = "compact" | "detailed"` is still accepted and
+mapped onto the item table: compact turns every opt-in item off, detailed turns
+them all on.
 
 ==============================================================================
 7. HEALTH						*gtm.nvim-health*

@@ -18,24 +18,86 @@ You need `gtmd` running. Grab it from the [GTM repo](https://github.com/prjctimg
 { "prjctimg/gtm.nvim", opts = {} }
 ```
 
-That's it. Press `<Leader>gp` and something plays.
+That's it. The statusline shows a play/pause icon and a source marker, and the editor tints itself with whatever is playing.
 
-### With the good bits
+There are **no default keymaps**. Pick the ones you want:
 
 ```lua
 {
   "prjctimg/gtm.nvim",
   opts = {
-    statusline_format = "detailed",
-    theme = {
-      reactive = true,        -- tint the editor with the album art
-      extra_groups = { "MyGroup" },  -- ...and these groups too
+    keymaps = {
+      play_pause = "<leader>gp",
+      next = "<leader>gn",
+      prev = "<leader>gN",
+      volume_up = "<leader>g>",
+      volume_down = "<leader>g<",
+      stop = "<leader>gS",
     },
   },
 }
 ```
 
-## Using it
+## Statusline
+
+The statusline is a list of items you turn on. By default only the source marker and the state icon are shown; everything else is opt-in, so nothing is squeezed in without asking.
+
+```lua
+{
+  "prjctimg/gtm.nvim",
+  opts = {
+    statusline = {
+      source = true,    -- ♫ Spotify ◉ radio ☁ podcast ❋ chart ▤
+      state = true,     -- ▶ ⏸ ⏹
+      artist = true,
+      title = true,
+      album = false,
+      progress = true,  -- ━━━─ 20 columns
+      time = false,     -- [01:23/04:56]
+      volume = false,   -- vol:80%
+      repeat = false,   -- [R]
+      shuffle = false,  -- [S]
+    },
+  },
+}
+```
+
+Items render in the order above. An item with nothing to show is skipped, so the empty state is just `⏹` rather than a row of zeroes.
+
+lualine:
+
+```lua
+require("lualine").setup({
+  sections = { lualine_x = { require("gtm").lualine_component() } },
+})
+```
+
+or any `statusline`:
+
+```lua
+vim.o.statusline = "%{%v:lua.require'gtm'.statusline()%}"
+```
+
+The component hides itself while the daemon is unreachable. The clock advances locally between daemon events, so the progress bar does not stutter waiting on the socket.
+
+## Reactive theming
+
+On by default. Your editor takes on the colours of the album you're listening to: every surface gets a wash of the dominant colour and the syntax highlights shift to the palette, so scrolling from one track to the next feels like the room changed with it.
+
+**The daemon does the colour work, not the plugin.** gtmd reads the cover art, extracts a palette, resolves it into a full set of roles — surfaces, foregrounds, accents, selection, syntax, semantics — and pushes them over the pulse socket. The plugin maps roles onto highlight groups and does no arithmetic at all. That is what keeps gtm.nvim, the gtm TUI, and any future editor plugin in agreement: one derivation, one answer.
+
+A few things worth knowing:
+
+- It **keeps the tint while paused**, and only restores your theme when playback really stops — no flicker on every pause.
+- **Error, warning, diff, spell and `Todo` colours never move.** They're how you spot problems, so they stay readable no matter what the artwork is doing.
+- Swapping colorscheme mid-song re-picks light or dark and re-tints, instead of dropping the theme.
+- `:Gtm theme reset` puts everything back exactly as it was.
+- A track with no cover art never tints. That is the daemon's call to make, not the plugin's.
+- Turn it off with `theme = { reactive = false }`.
+
+`:checkhealth gtm` reports which colour source is live: resolved by gtmd (with the role-set version), or derived locally because your gtmd predates the role-set event.
+
+## Commands
 
 | Command | What it does |
 |---------|--------------|
@@ -46,71 +108,13 @@ That's it. Press `<Leader>gp` and something plays.
 | `:Gtm mute` | Mute / unmute |
 | `:Gtm seek {secs}` | Jump in the track |
 | `:Gtm shuffle` | Toggle shuffle |
+| `:Gtm repeat` | Cycle repeat: off → one → all |
 | `:Gtm repeat {off\|one\|all}` | Set repeat mode |
 | `:Gtm status` | What is playing right now |
 | `:Gtm theme` | Show the active palette |
 | `:Gtm theme reset` | Clear the tint |
-| `:Gtm disconnect` | Drop the daemon connection |
 
-Default keys — all under `<Leader>g`, all remappable:
-
-| Key | Action |
-|-----|--------|
-| `<Leader>gp` | Play / pause |
-| `<Leader>gn` / `<Leader>gN` | Next / previous |
-| `<Leader>g>` / `<Leader>g<` | Volume up / down |
-| `<Leader>gS` | Stop |
-
-The Lua API mirrors the commands, so `require("gtm").next()` and friends work if you prefer to bind them yourself.
-
-## Reactive theming
-
-Turn on `theme.reactive` and your editor picks up the colours of the album you're listening to. Every surface gets a wash of the dominant colour and the syntax highlights shift to the palette, so scrolling from one track to the next feels like the room changed with it.
-
-The palette is extracted **by gtmd**, not here — the plugin never decodes an image. It just receives three hex colours over the event stream and derives a full highlight ramp from them.
-
-A few things worth knowing:
-
-- It **keeps the tint while paused**, and only restores your theme when playback really stops — no flicker on every pause.
-- **Error, warning, diff, spell and `Todo` colours never move.** They're how you spot problems, so they stay readable no matter what the artwork is doing.
-- Swapping colorscheme mid-song re-tints instead of dropping the theme.
-- `:Gtm theme reset` puts everything back exactly as it was.
-- A track with no cover art never tints. That is the daemon's call to make, not the plugin's.
-
-#### Colour ownership
-
-A newer gtmd goes further: it resolves the palette into a full set of **roles** —
-surfaces, foregrounds, accents, selection, syntax, semantics — and pushes those.
-The plugin then maps roles onto highlight groups and does no arithmetic at all,
-which is what keeps it, the gtm TUI, and any future editor plugin in agreement.
-
-`:checkhealth gtm` says which of the two is in play: colours resolved by gtmd
-(with the role-set version), or derived locally because your gtmd predates the
-role-set event. The local path is a fallback and is planned for removal once the
-role-set event is widely deployed.
-
-## Statusline
-
-```lua
-require("lualine").setup({
-  sections = { lualine_x = { require("gtm").lualine_component() } },
-})
-```
-
-Or render it yourself from `vim.o.statusline`:
-
-```lua
-vim.o.statusline = "%{%v:lua.require'gtm'.statusline()%}"
-```
-
-Two formats:
-
-```
-Artist - Title ▶ vol:80% ━━━━━━━━━━━━━━━━━━━━          -- compact
-▶ Artist - Title (Album) [01:23/04:56] vol:80% [R] [S] -- detailed
-```
-
-The component hides itself while the daemon is unreachable, so a stopped `gtmd` costs no width. The clock advances locally between daemon events, so the progress bar does not stutter waiting on the network.
+The Lua API mirrors the commands, so `require("gtm").next()` and friends work if you'd rather bind them yourself.
 
 ## How it talks to the daemon
 

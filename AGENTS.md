@@ -50,6 +50,21 @@ The pulse stream is the source of truth for state changes. Position is
 extrapolated locally between events; the `get_status_lite` resync is only a
 floor under drift the plugin never heard about.
 
+## Conventions worth keeping
+
+The statusline is a list of items in `defaults.statusline`, rendered in table
+order. Two items are on by default — `source` and `state` — and the rest are
+opt-in, so nothing appears without being asked for. An item with no data is
+skipped, which is what makes the empty state a bare `⏹`. Adding an item means
+adding a key to the defaults, the spec and the docs; there is no second format.
+
+There are no default keymaps. `CMDS` carries `key`/`desc` per entry so an opted-in
+mapping is one line, and the README lists the suggestions.
+
+`statusline.source` renders nothing until gtmd reports a playback source — see
+`PLAYBACK_SOURCE.md` in the gtm repo, alongside `REACTIVE_TOKENS.md` for the
+`reactive_theme` role sets.
+
 ## Colour ownership
 
 gtmd resolves the reactive colours, not the plugin. The plan is

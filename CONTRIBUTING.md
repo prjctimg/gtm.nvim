@@ -11,9 +11,12 @@ TUI this plugin talks to. If you are looking for the player itself, start there.
 
 `gtm.nvim` is deliberately three things:
 
-- **Playback control** — `:Gtm` and keymaps over the daemon's transport commands.
-- **Statusline integration** — a render function and a lualine component.
-- **Reactive theming** — the editor tinted from the album palette gtmd extracts.
+- **Playback control** — `:Gtm` and optional keymaps over the daemon's transport
+  commands. There are no default keymaps; the README lists suggestions.
+- **Statusline integration** — one item list, a render function and a lualine
+  component. Only the source marker and the state icon are on by default.
+- **Reactive theming** — the editor tinted from the album palette gtmd extracts,
+  on by default.
 
 It is under a thousand lines of code. Anything with an interface — browsing,
 queues, search, downloads — belongs in the `gtm` TUI, not here. **Please open an
@@ -76,15 +79,19 @@ columns. Keep it clean; a warning is a change to make, not to silence.
 The smoke test covers the machinery, but not the feel. Before opening a PR,
 walk this list against a real running `gtmd`:
 
-- [ ] `<Leader>gp` starts playback and the statusline updates without a redraw
+- [ ] the statusline shows only the state icon and source marker by default
+- [ ] enabling `artist`, `title`, `progress`, `time`, `volume`, `repeat` and
+      `shuffle` each adds exactly its item; disabling one removes it
+- [ ] the empty state is a bare `⏹` with everything else enabled
+- [ ] a keymap you configure fires; none are bound until you ask for one
 - [ ] play/pause, next, prev and stop all take effect
 - [ ] volume keys move the reported volume by 5% and the daemon agrees
 - [ ] `mute`, `shuffle` and `repeat {off|one|all}` work and are reflected in
-      `:Gtm status`
+      `:Gtm status`; bare `:Gtm repeat` cycles off -> one -> all
 - [ ] `:Gtm seek 30` jumps, and the statusline position follows
 - [ ] the progress bar advances smoothly while playing (the clock is
       extrapolated locally, so it must not tick in jumps)
-- [ ] `theme.reactive = true` tints the editor on a track with cover art
+- [ ] reactive theming tints the editor on a track with cover art (on by default)
 - [ ] `Error`, `Warning`, `Diff` and `Spell` groups keep their colorscheme
       colours while the tint is up
 - [ ] pausing keeps the tint; stopping or ending the track restores it exactly

@@ -16,21 +16,41 @@ local theme = require("gtm.theme")
 local uv = vim.uv
 
 local defaults = {
-	statusline_format = "compact", -- "compact" | "detailed"
 	resync_interval = 30000,
-	theme = { reactive = false, extra_groups = {} },
-	keymaps = {
-		play_pause = "<leader>gp",
-		next = "<leader>gn",
-		prev = "<leader>gN",
-		volume_up = "<leader>g>",
-		volume_down = "<leader>g<",
-		stop = "<leader>gS",
+	-- Statusline items, rendered in table order. The default shows the source
+	-- marker and the state icon; everything else is opt-in, so nothing is
+	-- squeezed in by default.
+	statusline = {
+		source = true,
+		state = true,
+		artist = false,
+		title = false,
+		album = false,
+		progress = false,
+		time = false,
+		volume = false,
+		["repeat"] = false,
+		shuffle = false,
 	},
+	theme = { reactive = true, extra_groups = {} },
+	keymaps = {},
 }
 
 G.opts = vim.deepcopy(defaults)
 local resync = nil
+
+--- 0.1.x configured `statusline_format`; map it onto the item table so an old
+--- config keeps its items instead of silently dropping to one icon.
+local function migrate(opts)
+	if not opts or not opts.statusline_format or opts.statusline then
+		return opts
+	end
+	local on = {}
+	for _, item in ipairs({ "artist", "title", "album", "progress", "time", "volume", "repeat", "shuffle" }) do
+		on[item] = opts.statusline_format ~= "compact"
+	end
+	return vim.tbl_extend("force", vim.deepcopy(opts), { statusline = on })
+end
 
 -- Playback: each is a single command send.
 function G.play_pause() ipc.send("play_pause") end
@@ -40,12 +60,17 @@ function G.stop() ipc.send("stop") end
 function G.mute() ipc.send("toggle_mute") end
 function G.shuffle() ipc.send("toggle_shuffle") end
 
---- RepeatMode arrives PascalCase on the wire; accept the lowercase a user types.
---- (`repeat` is a Lua keyword, so the public name cannot be `G.repeat`.)
-local REPEAT_MODES = { off = "Off", one = "One", all = "All" }
+-- The wire is PascalCase; the plugin keeps lowercase. `repeat` is a Lua
+-- keyword, so the public name cannot be `G.repeat`.
+local REPEAT_WIRE = { off = "Off", one = "One", all = "All" }
+local REPEAT_NEXT = { off = "One", one = "All", all = "Off" }
 
+--- Set the repeat mode; with no argument, advance off -> one -> all -> off.
 function G.cycle_repeat(mode)
-	ipc.send("cycle_repeat", { mode = REPEAT_MODES[mode] or mode })
+	local cur = mode or (ipc.status and ipc.status["repeat"]) or "off"
+	-- Only an explicit mode needs translating; cycling stays in lowercase.
+	local wire = mode and REPEAT_WIRE[mode] or REPEAT_NEXT[cur] or REPEAT_WIRE.off
+	ipc.send("cycle_repeat", { mode = wire })
 end
 
 function G.seek(secs)
@@ -63,60 +88,55 @@ end
 
 local ICON = { playing = "▶", paused = "⏸", stopped = "⏹" }
 
+--- Playback-source markers. A value gtmd adds later is simply absent here and
+--- renders as nothing, which is why this is a table rather than a fallback chain.
+--- See PLAYBACK_SOURCE.md in the gtm repo.
+local SOURCE_ICON = { ["local"] = "♫", spotify = "◉", radio = "☁", podcast = "❋", chart = "▤" }
+
 local function fmt_time(secs)
 	return string.format("%02d:%02d", math.floor(secs / 60), math.floor(secs % 60))
 end
 
-local function bar(pos, dur)
-	local filled = dur > 0 and math.floor(math.min(1, pos / dur) * 20) or 0
-	return string.rep("━", filled) .. string.rep("─", 20 - filled)
-end
-
---- `artist - title`, or nil when nothing is loaded. An empty statusline is
---- quieter than a placeholder.
-local function line()
-	local t = ipc.status and ipc.status.current_track
-	return type(t) == "table" and ((t.artist or "Unknown") .. " - " .. (t.title or "Unknown")) or nil
-end
-
-local function compact()
-	local s, name = ipc.status, line()
-	if not name then
-		return ""
-	end
-	local icon, vol = ICON[s.status] or "⏹", s.volume or 0
-	return string.format("%s %s vol:%d%% %s", name, icon, vol, bar(ipc.position(), ipc.duration()))
-end
-
-local function detailed()
-	local s, name = ipc.status, line()
-	if not name then
-		return "GTM - not playing"
-	end
-	local parts = { ICON[s.status] or "⏹", name }
-	if s.current_track.album and s.current_track.album ~= "" then
-		table.insert(parts, "(" .. s.current_track.album .. ")")
-	end
-	local clock = string.format("[%s/%s]", fmt_time(ipc.position()), fmt_time(ipc.duration()))
-	table.insert(parts, string.format("%s vol:%d%%", clock, s.volume or 0))
-	if s["repeat"] and s["repeat"] ~= "off" then
-		table.insert(parts, "[R]")
-	end
-	if s.shuffle then
-		table.insert(parts, "[S]")
-	end
-	return table.concat(parts, " ")
-end
-
+--- Render the enabled items. Each is skipped when off or when it has no data,
+--- which is what makes the empty state a bare stop icon rather than a row of
+--- zeroes.
 function G.statusline()
-	return G.opts.statusline_format == "detailed" and detailed() or compact()
+	local s, on, out = ipc.status, G.opts.statusline, {}
+	local t = s and s.current_track
+	local function add(text)
+		if text then
+			table.insert(out, text)
+		end
+	end
+
+	add(on.source and s and SOURCE_ICON[s.source])
+	add(on.state and (ICON[s and s.status] or "⏹"))
+
+	if t then
+		add(on.artist and t.artist)
+		add(on.title and t.title)
+		add(on.album and t.album)
+		if on.progress then
+			local width, pos, dur = 20, ipc.position(), ipc.duration()
+			local filled = dur > 0 and math.floor(math.min(1, pos / dur) * width) or 0
+			add(string.rep("━", filled) .. string.rep("─", width - filled))
+		end
+		if on.time then
+			add(string.format("[%s/%s]", fmt_time(ipc.position()), fmt_time(ipc.duration())))
+		end
+		add(on.volume and string.format("vol:%d%%", s.volume or 0))
+		add(on["repeat"] and s["repeat"] and s["repeat"] ~= "off" and "[R]")
+		add(on.shuffle and s.shuffle and "[S]")
+	end
+
+	return table.concat(out, " ")
 end
 
 --- Drop-in lualine component, hidden while the daemon is unreachable so a
 --- stopped gtmd costs no width.
 function G.lualine_component()
 	return {
-		compact,
+		G.statusline,
 		cond = function()
 			return ipc.connected
 		end,
@@ -154,13 +174,6 @@ local HANDLERS = {
 	repeat_mode_changed = function(ev)
 		ipc.patch("repeat", (ev.mode or ""):lower())
 	end,
-	duration_changed = patch("duration", "duration"),
-	-- Internet radio learns the real track name after the stream starts.
-	radio_title_changed = function(ev)
-		if ev.title and ipc.status then
-			ipc.status.current_track = vim.tbl_extend("force", ipc.status.current_track or {}, { title = ev.title })
-		end
-	end,
 	-- Fallback path: three hex strings, only from a daemon too old to send
 	-- resolved role sets. `apply` clears the tint when they are empty, which is
 	-- the daemon saying it had no art rather than that the art is black.
@@ -196,14 +209,8 @@ local function notify_theme(arg)
 	vim.notify(string.format("[gtm] %s %s %s", a, b, c))
 end
 
-local function disconnect()
-	ipc.disconnect()
-	pulse.close()
-	vim.notify("[gtm] disconnected")
-end
-
 --- One entry per `:Gtm` subcommand. `arg = true` means it takes a second
---- argument; `key` and `desc` drive the default keymap. One table so the command
+--- argument; `key` and `desc` drive an opt-in keymap. One table so the command
 --- surface, the keymaps and the completion list cannot drift apart.
 local CMDS = {
 	{ name = "play", key = "play_pause", desc = "play/pause", run = G.play_pause },
@@ -215,7 +222,6 @@ local CMDS = {
 	{ name = "mute", run = G.mute },
 	{ name = "shuffle", run = G.shuffle },
 	{ name = "status", run = notify_status },
-	{ name = "disconnect", run = disconnect },
 	{
 		name = "seek", arg = true,
 		run = function(arg)
@@ -227,7 +233,7 @@ local CMDS = {
 			end
 		end,
 	},
-	{ name = "repeat", arg = true, run = function(arg) G.cycle_repeat(arg or "all") end },
+	{ name = "repeat", arg = true, run = G.cycle_repeat },
 	{ name = "theme", arg = true, run = notify_theme },
 }
 
@@ -292,7 +298,7 @@ local function start_resync()
 end
 
 function G.setup(opts)
-	G.opts = vim.tbl_deep_extend("force", vim.deepcopy(defaults), opts or {})
+	G.opts = vim.tbl_deep_extend("force", vim.deepcopy(defaults), migrate(opts) or {})
 	theme.setup(G.opts.theme)
 
 	-- Tell the loader (and any other host) that setup is owned; see
@@ -310,7 +316,6 @@ function G.setup(opts)
 	for name, handler in pairs(HANDLERS) do
 		pulse.on(name, handler)
 	end
-
 	-- The command socket owns reconnection, so the pulse socket is re-claimed on
 	-- every (re)connect rather than growing its own retry loop.
 	ipc.connect(G.opts.socket_path, function()
