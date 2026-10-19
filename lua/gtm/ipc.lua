@@ -119,11 +119,20 @@ function I._open()
 	I.sock = sock
 	sock:connect(I.path, function(err)
 		-- A stale handle from a racing retry can land here late; the `~= check
-		-- drops it instead of resurrecting a dead pipe.
+		-- drops it instead of resurrecting a dead pipe. Two things it must not
+		-- do: close a handle `disconnect()` has already closed, which is a uv
+		-- error, and retry a connection the user just tore down. Only a handle
+		-- we still own falls through to the backoff, and only then is clearing
+		-- `I.sock` safe — otherwise a late callback would clobber the healthy
+		-- socket a newer attempt had already installed.
 		if err or I.sock ~= sock then
-			sock:close()
-			I.sock = nil
-			I._retry()
+			if not sock:is_closing() then
+				sock:close()
+			end
+			if I.sock == sock then
+				I.sock = nil
+				I._retry()
+			end
 			return
 		end
 		I.connected = true

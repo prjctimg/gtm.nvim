@@ -112,6 +112,19 @@ This is free software released under the GPL-3.0 license.
 
 ### Fixed
 
+- **Reactive theming stopped applying.** gtmd batches `reactive_palette` and
+  `reactive_theme` into one pulse frame, palette first. `pulse._frame` peeked
+  only the frame's leading tag, and the palette is deliberately unhandled, so
+  the entire frame — theme included — was dropped before it was decoded.
+  Single-event frames keep the cheap peek; a batch is now decoded in full, which
+  is what a batched `reactive_theme` needs. The smoke suite missed it because it
+  wrote the two events as separate frames; it now also sends the batch gtmd
+  actually sends.
+- Quitting nvim while a command-socket connect was still in flight closed the uv
+  pipe twice, printing a libuv `handle is already closing` error from inside the
+  callback. The late callback now closes only a handle it still owns, and no
+  longer clears or reschedules a retry for a socket the user already tore down.
+
 - `restore()` was clearing the stored role sets, so a colorscheme change could
   not re-pick a polarity. `restore()` now keeps them and a new `clear()` — which
   is what `:Gtm theme reset` and playback-stopped call — drops them, so a reset

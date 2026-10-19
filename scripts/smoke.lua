@@ -269,6 +269,24 @@ if push.client then
 	vim.o.background = "dark"
 	theme.on_colorscheme()
 	check("dark polarity restored", theme.roles().bg0 == 0x0d0d12)
+
+	-- gtmd batches these two into a single frame, palette first — the shape a
+	-- test that writes them separately cannot see. The palette is deliberately
+	-- not in WANTED, so decoding must read past its leading tag rather than
+	-- deciding the frame is not for us and dropping the theme behind it.
+	theme.clear()
+	check("cleared before the batch", theme.roles() == nil)
+	local batch = "\x92"
+		.. string.char(0x94) .. fixstr("reactive_palette")
+		.. fixstr("#3c044c") .. fixstr("#24042c") .. fixstr("#2b1618")
+		.. string.char(0x94) .. fixstr("reactive_theme") .. string.char(1)
+		.. role_map("#0d0d12", "#e0e0e0", "#3b6ea5")
+		.. role_map("#f6f4f1", "#1a1a1a", "#9c3b52")
+	push.client:write(be32(#batch) .. batch)
+	vim.wait(1000, function()
+		return theme.roles() ~= nil
+	end, 20)
+	check("a batched palette+theme frame keeps its theme", theme.roles() ~= nil, vim.inspect(theme.roles()))
 else
 	check("pulse client accepted", false)
 end
@@ -372,6 +390,21 @@ check("ipc.stale_for is a number", type(ipc.stale_for()) == "number")
 print("\n[idempotent setup]")
 gtm.setup({ socket_path = cmd_sock })
 check("setup is idempotent", vim.fn.exists(":Gtm") == 2 and ipc.connected)
+
+-- A disconnect racing an in-flight connect used to close the pipe twice, a uv
+-- error raised *inside* the connect callback — where pcall cannot see it. It
+-- only showed when quitting nvim while it was still dialling a daemon that was
+-- down. Run the race in a child nvim and read its stderr.
+local race = tmp .. "/race.lua"
+vim.fn.writefile({
+	"vim.opt.runtimepath:prepend([[" .. repo .. "]])",
+	'local ipc = require("gtm.ipc")',
+	'ipc.connect([[' .. cmd_sock .. "]], function() end)",
+	"ipc.disconnect()",
+	"vim.wait(600)",
+}, race)
+local res = vim.system({ vim.v.progpath, "--headless", "-l", race }, { text = true }):wait()
+check("no double-close when a connect is torn down mid-flight", not (res.stderr or ""):find("already closing", 1, true), vim.inspect(res.stderr))
 
 vim.wait(100)
 print("\n" .. (failures == 0 and "ALL CHECKS PASSED" or (failures .. " CHECK(S) FAILED")))

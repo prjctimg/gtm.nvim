@@ -9,10 +9,15 @@
 --
 -- Most frames are audio telemetry nobody wants (`spectrum_changed` at 60 Hz,
 -- `waveform_changed` at 30 Hz, `position_changed` at 60 Hz). Decoding those
--- would burn time in the read callback forever for nothing, so the tag is
--- peeked off the front of the frame with a few byte comparisons and anything
--- unrecognised is dropped without ever being decoded. `vim.mpack` — bundled
--- with Neovim — does the decoding for the frames that survive.
+-- would burn time in the read callback forever for nothing, so on a
+-- single-event frame the tag is peeked off the front with a few byte
+-- comparisons and an unrecognised one is dropped without ever being decoded.
+-- `vim.mpack` — bundled with Neovim — does the decoding for what survives.
+--
+-- A frame may batch several events, and gtmd does exactly that for the theme:
+-- `reactive_palette` and `reactive_theme` travel together. The peek only sees
+-- the first tag, so batches are always decoded — dropping one on its leading
+-- tag would throw away events that follow it. See `P._frame`.
 --
 -- This is free software released under the GPL-3.0 license.
 
@@ -157,14 +162,39 @@ function P.heartbeat_age()
 	return heartbeat > 0 and (uv.hrtime() - heartbeat) / 1e9 or nil
 end
 
+--- Number of events a frame carries, read off its outer array header. 0 when
+--- the first byte is not an array header at all, which means malformed.
+local function event_count(s)
+	local m = byte(s, 1)
+	if not m then
+		return 0
+	elseif m >= 0x90 and m <= 0x9f then
+		return m - 0x90
+	elseif m == 0xdc then
+		return byte(s, 2) * 256 + byte(s, 3)
+	elseif m == 0xdd then
+		return byte(s, 2) * 16777216 + byte(s, 3) * 65536 + byte(s, 4) * 256 + byte(s, 5)
+	end
+	return 0
+end
+
 function P._frame(payload)
-	local tag = peek_tag(payload)
-	if not tag or not WANTED[tag] then
+	local n = event_count(payload)
+	if n == 0 then
 		return
 	end
-	if tag == "heartbeat" then
-		heartbeat = uv.hrtime()
-		return
+	-- The cheap reject applies to single events only, which is every frame the
+	-- daemon batches nothing onto and therefore all of the 60 Hz telemetry. A
+	-- batch is decoded in full so a wanted event trailing an unwanted one —
+	-- `reactive_theme` behind `reactive_palette` — still reaches its handler.
+	local tag = n == 1 and peek_tag(payload)
+	if tag then
+		if not WANTED[tag] then
+			return
+		elseif tag == "heartbeat" then
+			heartbeat = uv.hrtime()
+			return
+		end
 	end
 	local ok, decoded = pcall(vim.mpack.decode, payload)
 	if not ok or type(decoded) ~= "table" then
