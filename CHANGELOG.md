@@ -17,9 +17,9 @@ This is free software released under the GPL-3.0 license.
 - Reactive themes can now be **resolved by the daemon**. A gtmd new enough to
   send them broadcasts a `reactive_theme` pulse event: a complete role→colour
   set (`bg0`, `fg`, `accent`, …) for both light and dark, plus a token-set
-  version. The plugin then performs no colour arithmetic at all — it maps roles
-  onto highlight groups, so this plugin, the `gtm` TUI and any future editor
-  plugin all render the same colours from the same track.
+  version. The plugin maps those roles onto highlight groups — its only colour
+  calculation is the background wash — so this plugin, the `gtm` TUI and any
+  future editor plugin all render the same colours from the same track.
 
   The editor's own background selects the polarity, so changing colorscheme
   mid-track re-picks light or dark and re-tints instead of losing the palette.
@@ -27,8 +27,13 @@ This is free software released under the GPL-3.0 license.
   is worse than no ramp. `:checkhealth gtm` reports which source is live.
 
   This is the client half of `REACTIVE_TOKENS.md` in the
-  [gtm repo](https://github.com/prjctimg/gtm). There is no local derivation:
-  against a gtmd that predates role sets the editor stays untinted.
+  [gtm repo](https://github.com/prjctimg/gtm). There is no local role
+  derivation: against a gtmd that predates role sets the editor stays untinted.
+
+- `theme.intensity` (default `0.25`) tunes the background wash: each background
+  steps that fraction of the way toward the album accent, so the tint lands on
+  *your* colorscheme's surfaces instead of a fixed dark grey. `0` leaves
+  backgrounds alone while accents and syntax still follow the album.
 
 - `:checkhealth gtm`, covering requirements, both socket connections and
   heartbeat freshness, status snapshot staleness, and whether a palette is
@@ -68,8 +73,8 @@ This is free software released under the GPL-3.0 license.
 - **Breaking.** The local palette derivation in `theme.lua` (79 lines of
   `hsv_to_rgb`/`rgb_to_hsv`/`mix`/`adjust`), along with the `reactive_palette`
   subscription that fed it. gtmd owns the colours outright: a client maps roles
-  onto groups and does no arithmetic, which is what keeps this plugin, the TUI
-  and future clients rendering the same track identically.
+  onto groups and computes nothing but the background wash, which is what keeps
+  this plugin, the TUI and future clients rendering the same track identically.
 
   A gtmd that predates `reactive_theme` now leaves the editor untinted rather
   than deriving its own ramp. That is deliberate — a second derivation is the
@@ -92,12 +97,10 @@ This is free software released under the GPL-3.0 license.
   | Equalizer control (`:Gtm eq`) | The TUI |
   | Favourites, queue and playlist commands | The TUI |
 
-  The plugin is ~872 lines of code, down from ~1330.
+  The plugin is ~940 lines of code, down from ~1330.
 
 - `opts.float` (width, height, border, cover_art) and `opts.keymaps.float`.
 - `opts.theme.scope` — with no float left, the tint is always global.
-- `opts.theme.intensity` — it was declared in the defaults and never read by
-  the theme module; the ramp's saturation is derived from the palette.
 - Daemon auto-start. `gtm.nvim` used to spawn `gtmd` when no socket was found.
   A plugin silently starting a server process is not its call to make, so it now
   notifies instead. Start `gtmd` yourself.
@@ -112,6 +115,23 @@ This is free software released under the GPL-3.0 license.
 
 ### Fixed
 
+- **Syntax highlighting was not being applied.** `theme.fg_role()` resolved a
+  group to a syntax role with `name:gsub("^@", ""):gsub("[%w_]+$", "")`, which
+  strips a single-segment name to `""` and leaves a trailing dot on a dotted
+  one, so the lookup never matched: every syntax group (`String`, `Keyword`,
+  `Function`, `@string`, `@keyword`, …) collapsed to `fg`. On top of that,
+  `set_roles` copied only the eleven roles in `NEED`, so the daemon's twelve
+  syntax roles were decoded and then discarded. The mapping now resolves exact
+  Vim groups and a tree-sitter capture's first segment (`@function.builtin` →
+  `function`), and every role the daemon sends is kept. `Comment` takes the
+  daemon's `comment` role instead of `fg_dim`.
+- **The reactive background was a fixed near-black, not your colorscheme.**
+  `bg0` from the daemon is `mix(#0d0d12, primary, 0.06)` — a grey the TUI owns.
+  Applying it to `Normal` replaced the editor's own background with something
+  darker and barely tinted, which read as "too darkened" and stopped feeling
+  reactive. Every background is now a wash of the daemon's `accent` over the
+  colour the group already had (`theme.intensity`, default `0.25`), so the
+  editor keeps its theme's elevation and gains the album's hue.
 - **Reactive theming stopped applying.** gtmd batches `reactive_palette` and
   `reactive_theme` into one pulse frame, palette first. `pulse._frame` peeked
   only the frame's leading tag, and the palette is deliberately unhandled, so

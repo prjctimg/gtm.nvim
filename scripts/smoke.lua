@@ -234,6 +234,13 @@ if push.client then
 			bg0 = bg, bg1 = bg, bg2 = bg, bg3 = bg, sel_bg = bg,
 			fg = fg, fg_dim = fg, cursor_line_nr = accent,
 			accent = accent, accent2 = accent, accent3 = accent,
+			-- The syntax and surface roles the client now consumes: distinct
+			-- values so a group that fell through to `fg` is visible.
+			comment = "#7a6478", string = "#8fbf84", keyword = "#c99be8",
+			["function"] = "#82c8f0", type = "#7fd6d0", constant = "#f0b076",
+			operator = "#a8b0c0", punctuation = "#9a9aa8",
+			search_bg = "#5c4a3a", search_fg = "#1a1a10",
+			sel_fg = "#f2f2f6", line = "#5a4463",
 		})
 	end
 	-- Roles cross the wire as `#rrggbb` strings, so the fake daemon sends those.
@@ -251,7 +258,17 @@ if push.client then
 
 	check("token-set version recorded", theme.version() == 1, tostring(theme.version()))
 	check("dark polarity picked for a dark editor", theme.roles().bg0 == 0x0d0d12, vim.inspect(theme.roles().bg0))
-	check("Normal takes the daemon's bg0", vim.api.nvim_get_hl(0, { name = "Normal" }).bg == 0x0d0d12)
+	local function fg(name) return vim.api.nvim_get_hl(0, { name = name }).fg end
+	check("Normal is a wash, not the daemon's flat surface",
+		vim.api.nvim_get_hl(0, { name = "Normal" }).bg ~= 0x0d0d12,
+		vim.inspect(vim.api.nvim_get_hl(0, { name = "Normal" })))
+	check("Comment takes the comment role, not fg_dim", fg("Comment") == 0x7a6478, tostring(fg("Comment")))
+	check("String takes the string role", fg("String") == 0x8fbf84, tostring(fg("String")))
+	check("Keyword takes the keyword role", fg("Keyword") == 0xc99be8, tostring(fg("Keyword")))
+	check("a tree-sitter capture follows its base group", fg("@function.builtin") == 0x82c8f0, tostring(fg("@function.builtin")))
+	check("syntax groups are not all one colour",
+		fg("String") ~= fg("Keyword") and fg("Keyword") ~= fg("Function"),
+		vim.inspect({ fg("String"), fg("Keyword"), fg("Function") }))
 	check("semantic groups still untouched", vim.api.nvim_get_hl(0, { name = "Error" }).fg ~= nil)
 
 	-- An incomplete role set must be refused outright, not half-applied.

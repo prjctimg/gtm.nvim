@@ -40,7 +40,9 @@ local defaults = {
 			chart = "\xf3\xb0\x84\xaa", -- md-chart_line   U+F012A
 		},
 	},
-	theme = { reactive = true, extra_groups = {} },
+	-- `intensity` is how far each background is washed toward the album accent;
+	-- 0 leaves your colorscheme's surfaces untouched.
+	theme = { reactive = true, intensity = 0.25, extra_groups = {} },
 	keymaps = {},
 }
 

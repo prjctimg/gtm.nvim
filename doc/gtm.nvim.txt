@@ -129,10 +129,13 @@ Reactive theming: >
 
 On by default. The editor takes on the colours of the album currently playing.
 gtmd extracts the palette from the cover art and broadcasts a resolved role set;
-this plugin never decodes an image and performs no colour arithmetic. It only
-maps roles onto highlight groups, which keeps it, the gtm TUI, and any other
-client in agreement.
+this plugin never decodes an image. It maps roles onto highlight groups, which
+keeps it, the gtm TUI, and any other client in agreement.
 
+  - Backgrounds are your colorscheme's own colours washed toward the album accent
+    by `theme.intensity` (default 0.25), so the editor stays your theme rather
+    than being replaced by a fixed dark surface. Set it to 0 to leave
+    backgrounds alone while accents and syntax still follow the album.
   - The tint is kept while playback is paused and dropped only when playback
     stops or the track ends.
   - Semantic groups (Error, Warning, Diff, Spell, Todo, diagnostics, gitSigns)
@@ -141,10 +144,10 @@ client in agreement.
   - A track with no cover art never tints.
   - `:Gtm theme reset` restores every group to exactly its prior value.
 
-Turn it off with `theme = { reactive = false }`. Add your own groups to the tint
-with `theme.extra_groups`.
+Turn it off with `theme = { reactive = false }`. Tune the background wash with
+`theme.intensity`, and add your own groups to the tint with `theme.extra_groups`.
 
-The plugin derives nothing itself. Against a gtmd that predates role sets the
+The plugin resolves no roles itself. Against a gtmd that predates role sets the
 editor stays untinted; `:checkhealth gtm` reports that rather than leaving you
 to wonder.
 
@@ -181,7 +184,7 @@ Defaults: >
       artist = false, title = false, album = false, progress = false,
       time = false, volume = false, repeat = false, shuffle = false,
     },
-    theme = { reactive = true, extra_groups = {} },
+    theme = { reactive = true, intensity = 0.25, extra_groups = {} },
     keymaps = {},
   }
 <

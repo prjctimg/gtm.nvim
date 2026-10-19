@@ -3,11 +3,16 @@
 -- gtm.theme: apply the reactive theme
 --
 -- gtmd owns the colours. It extracts a palette from the cover of the track on
--- air and pushes a resolved *role set* — `bg0`, `fg`, `accent`, and the rest —
--- over the pulse socket. This module picks the polarity and maps roles onto
--- highlight groups. It performs no colour arithmetic at all: a daemon without
--- role sets tints nothing, which beats this plugin guessing colours differently
--- from the TUI.
+-- air, resolves it into named *roles* — `accent`, `comment`, `sel_bg` and the
+-- rest — and pushes a role set over the pulse socket. This module picks the
+-- polarity and maps roles onto highlight groups.
+--
+-- One colour decision stays on the client: the background. The daemon cannot
+-- know your colorscheme, so it cannot produce "your theme washed with the
+-- album". Every background is therefore a wash of the daemon's `accent` over
+-- the colour the group already had, scaled by `theme.intensity`. That is a
+-- surface policy, not a second ramp: no role the daemon resolved is ever
+-- re-derived here.
 --
 -- Two rules hold throughout: semantic groups (Error, Warning, Diff, Spell, Todo,
 -- diagnostics, gitSigns) are never tinted, because an error that changes colour
@@ -20,9 +25,12 @@
 local T = {}
 
 T._enabled, T._touched, T._snap, T._extra = false, {}, nil, {}
+T._base, T._intensity = nil, 0.25
 
--- Roles this module consumes. A daemon role set missing any of them is ignored
--- in favour of local derivation: a half-applied ramp is worse than a fallback.
+-- Roles a set must carry before it is accepted at all: a half-applied ramp is
+-- worse than none. Every other role is applied when the daemon sends it and
+-- skipped when it does not, so a client built against a newer set degrades
+-- instead of failing outright.
 local NEED = {
 	"bg0", "bg1", "bg2", "bg3", "sel_bg",
 	"fg", "fg_dim", "cursor_line_nr",
@@ -30,33 +38,46 @@ local NEED = {
 }
 
 -- ============================================================================
--- Role -> highlight group. This mapping is data, and is the whole of what a
+-- Role -> highlight group. The mapping is data, and is the whole of what a
 -- client has to own: group names are per-editor and cannot live in the daemon.
 -- ============================================================================
 
-local SURFACE = {
-	Normal = "bg0", NormalNC = "bg0", TabLineFill = "bg0", LineNr = "bg0", SignColumn = "bg0",
-	Pmenu = "bg1", StatusLineNC = "bg1", TabLine = "bg1", Folded = "bg1",
-	StatusLine = "bg2", CursorLine = "bg2", CursorColumn = "bg2", ColorColumn = "bg2",
-	Visual = "bg3", PmenuSel = "bg3", TabLineSel = "bg3",
-	Search = "sel_bg", IncSearch = "sel_bg", CurSearch = "sel_bg",
+-- Foreground roles. A tree-sitter capture (`@function.builtin`) resolves through
+-- its first segment, the base Vim group the capture mirrors.
+local ROLE = {
+	Comment = "comment",
+	String = "string", Character = "string",
+	Number = "number", Float = "number",
+	Boolean = "boolean", Constant = "constant",
+	Identifier = "identifier", Variable = "variable",
+	Parameter = "variable", Field = "variable", Property = "variable",
+	Function = "function", Constructor = "type",
+	Statement = "keyword", Keyword = "keyword", Conditional = "keyword",
+	Repeat = "keyword", Exception = "keyword", Label = "keyword",
+	Include = "keyword", Define = "keyword", Macro = "keyword",
+	PreProc = "keyword", PreCondit = "keyword",
+	Operator = "operator",
+	Type = "type", Structure = "type", Typedef = "type",
+	StorageClass = "type", Namespace = "type", Module = "type",
+	Special = "punctuation", SpecialChar = "punctuation",
+	Delimiter = "punctuation", Punctuation = "punctuation",
+	Title = "fg_bright", CursorLineNr = "cursor_line_nr",
+	WinSeparator = "line", VertSplit = "line",
+	LineNr = "fg_dim", SignColumn = "fg_dim",
+	Visual = "sel_fg", PmenuSel = "sel_fg", TabLineSel = "sel_fg",
+	Search = "search_fg", IncSearch = "search_fg", CurSearch = "search_fg",
 }
 
--- Foreground overrides for groups that also take a surface.
-local SURFACE_FG = {
-	Search = "bg0", IncSearch = "bg0", CurSearch = "bg0",
-	CursorLineNr = "cursor_line_nr", LineNr = "fg_dim", SignColumn = "fg_dim",
+-- Backgrounds the daemon resolves directly: selection, search and the cursor
+-- line say something, so they take the daemon's role rather than the wash.
+local BG = {
+	Visual = "sel_bg", PmenuSel = "sel_bg", TabLineSel = "sel_bg",
+	Search = "search_bg", IncSearch = "search_bg", CurSearch = "search_bg",
+	CursorLine = "cursor_line", CursorColumn = "cursor_line", ColorColumn = "cursor_line",
+	Cursor = "cursor",
 }
 
-local DIM = { Comment = true, NonText = true, Whitespace = true, SpecialKey = true }
-
--- Syntax-tree base -> accent role (`@function.builtin.lua` -> `function.builtin`).
-local SLOT = {
-	["function.builtin"] = "accent", ["function.macro"] = "accent",
-	keyword = "accent", type = "accent", identifier = "accent",
-	string = "accent2", character = "accent2", constant = "accent2",
-	comment = "accent3", punctuation = "accent3",
-}
+local DIM = { NonText = true, Whitespace = true, SpecialKey = true }
 
 -- Prefix matching catches the spell and diagnostic variants.
 local SEMANTIC = {
@@ -74,10 +95,24 @@ local function is_semantic(name)
 	return name:sub(1, 8) == "gitSigns"
 end
 
---- The foreground role a group takes.
+--- The foreground role a group takes, or nil to leave its colorscheme value.
 local function fg_role(name)
-	local slot = SLOT[name:gsub("^@", ""):gsub("[%w_]+$", "")]
-	return SURFACE_FG[name] or (DIM[name] and "fg_dim") or (slot and SLOT[slot]) or "fg"
+	if ROLE[name] then
+		return ROLE[name]
+	end
+	local base = name:match("^@([%w_]+)")
+	return (base and ROLE[base:sub(1, 1):upper() .. base:sub(2)]) or (DIM[name] and "fg_dim")
+end
+
+--- Blend two 0xRRGGBB colours. The only colour calculation in the client: the
+--- background wash. It scales one step toward the accent and never re-resolves
+--- a role the daemon already named.
+local function wash(from, to, t)
+	local function ch(c, shift) return math.floor(c / 2 ^ shift) % 256 end
+	local function mix(a, b) return math.floor(a + (b - a) * t + 0.5) end
+	return mix(ch(from, 16), ch(to, 16)) * 65536
+		+ mix(ch(from, 8), ch(to, 8)) * 256
+		+ mix(ch(from, 0), ch(to, 0))
 end
 
 -- ============================================================================
@@ -86,7 +121,9 @@ end
 
 --- Remember every global highlight group, so the tint can be undone exactly.
 --- There is no API to enumerate highlight groups; `getcompletion(…, "highlight")`
---- is the documented way to get the list Neovim itself knows about.
+--- is the documented way to get the list Neovim itself knows about. The
+--- colorscheme's own background is captured here too: the wash is applied to it,
+--- not to a surface the daemon has never seen.
 function T.snapshot()
 	local snap = {}
 	for _, name in ipairs(vim.fn.getcompletion("", "highlight")) do
@@ -96,11 +133,14 @@ function T.snapshot()
 		end
 	end
 	T._snap = snap
+	local normal = vim.api.nvim_get_hl(0, { name = "Normal" })
+	T._base = normal.bg or (vim.o.background == "light" and 0xf6f4f1 or 0x0d0d12)
 end
 
 function T.setup(opts)
 	opts = opts or {}
 	T._enabled, T._extra = opts.reactive == true, opts.extra_groups or {}
+	T._intensity = math.max(0, math.min(0.5, opts.intensity or 0.25))
 	T._touched, T._roles, T._sets, T._ver = {}, nil, nil, nil
 	T.snapshot()
 end
@@ -137,32 +177,47 @@ end
 -- Applying a role set
 -- ============================================================================
 
---- Apply resolved roles. The only path that writes highlights; both colour
---- sources funnel through it.
+--- Apply resolved roles. The only path that writes highlights.
 local function apply(roles)
 	T._roles, T._touched = roles, {}
+	local accent = roles.accent
+	local base = T._base or 0x0d0d12
 	for name, saved in pairs(T._snap or {}) do
 		-- Linked groups resolve on their own; rewriting one would freeze the
 		-- link into a literal.
 		if type(saved) == "table" and not saved.link and not is_semantic(name) then
-			local attrs = vim.deepcopy(saved)
-			local bg = SURFACE[name]
+			local attrs, changed = vim.deepcopy(saved), false
+			local bg = BG[name] and roles[BG[name]]
 			if bg then
-				attrs.bg = roles[bg]
+				attrs.bg, changed = bg, true
+			elseif accent then
+				-- Wash the group's own colour, so the colorscheme's elevation
+				-- survives and only the hue is ours. Normal may have no
+				-- background yet; the captured base stands in for it.
+				local from = saved.bg or ((name == "Normal" or name == "NormalNC") and base)
+				if from then
+					attrs.bg, changed = wash(from, accent, T._intensity), true
+				end
 			end
-			attrs.fg = roles[fg_role(name)]
-			vim.api.nvim_set_hl(0, name, attrs)
-			T._touched[name] = true
+			local role = fg_role(name)
+			local fg = role and roles[role]
+			if fg then
+				attrs.fg, changed = fg, true
+			end
+			if changed then
+				vim.api.nvim_set_hl(0, name, attrs)
+				T._touched[name] = true
+			end
 		end
 	end
 	for _, name in ipairs(T._extra) do
-		vim.api.nvim_set_hl(0, name, { fg = roles.fg, bg = roles.bg1 })
+		vim.api.nvim_set_hl(0, name, { fg = roles.fg, bg = accent and wash(base, accent, T._intensity) })
 		T._touched[name] = true
 	end
 end
 
 -- ============================================================================
--- Source 1: roles from the daemon (preferred)
+-- Roles from the daemon
 -- ============================================================================
 
 local function from_hex(s)
@@ -198,12 +253,21 @@ function T.set_roles(ev)
 			break
 		end
 		for _, role in ipairs(NEED) do
-			local rgb = from_hex(raw[role])
-			if not rgb then
+			if not from_hex(raw[role]) then
 				complete = false
 				break
 			end
-			roles[role] = rgb_int(rgb)
+		end
+		if not complete then
+			break
+		end
+		-- Every role the daemon resolved, not just the required ones: the
+		-- syntax roles are what keep code legible under the tint.
+		for role, hex in pairs(raw) do
+			local rgb = from_hex(hex)
+			if rgb then
+				roles[role] = rgb_int(rgb)
+			end
 		end
 		sets[polarity] = roles
 	end

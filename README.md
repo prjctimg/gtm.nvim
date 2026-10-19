@@ -106,22 +106,23 @@ The component hides itself while the daemon is unreachable. The clock advances l
 
 On by default. Your editor takes on the colours of the album you're listening to: every surface gets a wash of the dominant colour and the syntax highlights shift to the palette, so scrolling from one track to the next feels like the room changed with it.
 
-**The daemon does the colour work, not the plugin.** gtmd reads the cover art, extracts a palette, resolves it into a full set of roles — surfaces, foregrounds, accents, selection, syntax, semantics — and pushes them over the pulse socket. The plugin maps roles onto highlight groups and does no arithmetic at all. That is what keeps gtm.nvim, the gtm TUI, and any future editor plugin in agreement: one derivation, one answer.
+**The daemon does the colour work, not the plugin.** gtmd reads the cover art, extracts a palette, resolves it into a full set of roles — surfaces, foregrounds, accents, selection, syntax, semantics — and pushes them over the pulse socket. The plugin maps roles onto highlight groups. The only colour it computes itself is the background wash, because the daemon cannot know which colorscheme you run. That is what keeps gtm.nvim, the gtm TUI, and any future editor plugin in agreement: one derivation, one answer.
 
 A few things worth knowing:
 
+- **Backgrounds are your colorscheme, washed with the album.** Each background keeps its own colour and steps `theme.intensity` (default `0.25`) of the way toward the album accent, so the editor is *your* theme warmed by the record — never a fixed dark grey substituted for it.
 - It **keeps the tint while paused**, and only restores your theme when playback really stops — no flicker on every pause.
 - **Error, warning, diff, spell and `Todo` colours never move.** They're how you spot problems, so they stay readable no matter what the artwork is doing.
 - Swapping colorscheme mid-song re-picks light or dark and re-tints, instead of dropping the theme.
 - `:Gtm theme reset` puts everything back exactly as it was.
 - A track with no cover art never tints. That is the daemon's call to make, not the plugin's.
-- Turn it off with `theme = { reactive = false }`.
+- Turn it off with `theme = { reactive = false }`, or set `theme = { intensity = 0 }` to keep your backgrounds untouched while the accents and syntax still follow the album.
 
 It needs a gtmd that sends role sets. Against an older daemon the editor stays
 untinted — deliberately, since a second derivation is how two clients end up
 rendering the same track differently.
 
-The plugin derives nothing. If your gtmd predates role sets, `:checkhealth gtm` says so and the editor simply stays untinted rather than guessing colours the TUI would render differently.
+The plugin derives no roles. If your gtmd predates role sets, `:checkhealth gtm` says so and the editor simply stays untinted rather than guessing colours the TUI would render differently.
 
 ## Commands
 

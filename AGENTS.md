@@ -72,10 +72,19 @@ gtmd resolves the reactive colours, not the plugin: `REACTIVE_TOKENS.md` in the
 carrying a resolved role→colour set for both polarities, so this plugin, the TUI
 and future clients agree.
 
-**`theme.lua` contains no colour maths.** It picks a polarity and maps roles
-onto highlight groups. There is no local derivation and there must not be one
-again — two derivations is exactly how two clients end up rendering the same
-track differently. A daemon without role sets tints nothing, which is correct.
+**`theme.lua` derives no role.** It picks a polarity and maps roles onto
+highlight groups. There must be no second ramp again — two derivations is
+exactly how two clients end up rendering the same track differently. A daemon
+without role sets tints nothing, which is correct.
+
+The one colour calculation the client owns is the **background wash**: each
+background is stepped `theme.intensity` of the way toward the daemon's `accent`
+role. The daemon cannot produce this, because it does not know which colorscheme
+the editor runs — a background that is *your* theme warmed by the album has to
+be blended against a colour only the client has. It is a surface policy, not a
+role derivation: no role the daemon named is recomputed, and every non-background
+role (syntax, accents, selection, search, lines, cursor) is applied verbatim.
 
 A role set missing any role in `NEED` is ignored outright: a half-applied ramp
-is worse than no ramp.
+is worse than no ramp. Every other role is applied when present and skipped when
+absent, so a client built against a newer set degrades instead of failing.
