@@ -24,7 +24,7 @@
 
 local T = {}
 
-T._enabled, T._touched, T._snap, T._extra = false, {}, nil, {}
+T._enabled, T._applied, T._snap, T._extra = false, {}, nil, {}
 T._base, T._intensity = nil, 0.25
 
 -- Roles a set must carry before it is accepted at all: a half-applied ramp is
@@ -141,7 +141,7 @@ function T.setup(opts)
 	opts = opts or {}
 	T._enabled, T._extra = opts.reactive == true, opts.extra_groups or {}
 	T._intensity = math.max(0, math.min(0.5, opts.intensity or 0.25))
-	T._touched, T._roles, T._sets, T._ver = {}, nil, nil, nil
+	T._applied, T._roles, T._sets, T._ver = {}, nil, nil, nil
 	T.snapshot()
 end
 
@@ -158,12 +158,12 @@ function T.roles() return T._roles end
 --- role sets survive, so a colorscheme change can re-pick from them without
 --- waiting for the next track.
 function T.restore()
-	for name in pairs(T._touched) do
+	for name in pairs(T._applied) do
 		if T._snap and T._snap[name] then
 			vim.api.nvim_set_hl(0, name, vim.deepcopy(T._snap[name]))
 		end
 	end
-	T._touched, T._roles = {}, nil
+	T._applied, T._roles = {}, nil
 end
 
 --- Forget the role sets entirely, as `:Gtm theme reset` asks. Without this a
@@ -179,7 +179,7 @@ end
 
 --- Apply resolved roles. The only path that writes highlights.
 local function apply(roles)
-	T._roles, T._touched = roles, {}
+	T._roles, T._applied = roles, {}
 	local accent = roles.accent
 	local base = T._base or 0x0d0d12
 	for name, saved in pairs(T._snap or {}) do
@@ -206,13 +206,16 @@ local function apply(roles)
 			end
 			if changed then
 				vim.api.nvim_set_hl(0, name, attrs)
-				T._touched[name] = true
+				-- Keep what we wrote: a colorscheme change has to tell our own
+				-- writes apart from groups the new scheme redefined itself.
+				T._applied[name] = attrs
 			end
 		end
 	end
 	for _, name in ipairs(T._extra) do
-		vim.api.nvim_set_hl(0, name, { fg = roles.fg, bg = accent and wash(base, accent, T._intensity) })
-		T._touched[name] = true
+		local attrs = { fg = roles.fg, bg = accent and wash(base, accent, T._intensity) }
+		vim.api.nvim_set_hl(0, name, attrs)
+		T._applied[name] = attrs
 	end
 end
 
@@ -286,17 +289,46 @@ function T.palette_hexes()
 	return hx(r.accent), hx(r.accent2), hx(r.accent3)
 end
 
---- The colorscheme changed. Put the tint down before re-snapshotting: the
---- semantic groups are now someone else's, and snapshotting while our own
---- colours are still applied would record the tint as the colorscheme's own and
---- make a later restore a no-op. Then re-apply against the new background.
+--- The colorscheme changed. The new scheme has already re-applied its own
+--- highlights, so ours survived only where it did not define the group. Put our
+--- own writes back to their pre-tint baseline *only where they are still ours*:
+--- restoring the previous scheme's colours over the new one would be worse than
+--- leaving the tint, and snapshotting our own tint would record it as pristine
+--- and turn a later restore into a no-op. Then re-snapshot and re-apply against
+--- the new background.
+---
+--- Deferred with `vim.schedule`: colorscheme plugins register their own
+--- `ColorScheme` handlers and whichever runs last wins, so ours has to run after
+--- all of them to keep top precedence over the tint.
 function T.on_colorscheme()
-	if not T._enabled or not T._sets then
+	if not T._enabled then
 		return
 	end
-	T.restore()
-	T.snapshot()
-	pick()
+	vim.schedule(function()
+		if not T._enabled then
+			return
+		end
+		for name, attrs in pairs(T._applied) do
+			local current = vim.api.nvim_get_hl(0, { name = name, link = false })
+			if T._snap and T._snap[name] and vim.deep_equal(attrs, current) then
+				vim.api.nvim_set_hl(0, name, vim.deepcopy(T._snap[name]))
+			end
+		end
+		T._applied, T._roles = {}, nil
+		T.snapshot()
+		if T._sets then
+			pick()
+		end
+	end)
+end
+
+--- Re-assert the current tint. A safety net for a background some other actor
+--- overwrote without a `ColorScheme` of its own firing; the pulse stream is
+--- still the source of truth for *what* the colours are.
+function T.refresh()
+	if T._enabled and T._sets then
+		pick()
+	end
 end
 
 return T

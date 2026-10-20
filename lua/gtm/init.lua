@@ -285,7 +285,9 @@ local function stop_resync()
 end
 
 --- Slow `get_status_lite` poll. Not the primary update path — the pulse stream
---- is — just a floor under drift we were never told about.
+--- is — just a floor under drift we were never told about. The same tick
+--- re-claims the pulse socket (cheap and idempotent) and re-asserts the tint,
+--- so nothing that silently shadows either survives a full interval.
 local function start_resync()
 	stop_resync()
 	resync = uv.new_timer()
@@ -295,6 +297,8 @@ local function start_resync()
 				ipc.set_status(resp.state)
 			end
 		end)
+		pulse.connect(ipc.pulse_path())
+		theme.refresh()
 	end)
 end
 
@@ -317,8 +321,9 @@ function G.setup(opts)
 	for name, handler in pairs(HANDLERS) do
 		pulse.on(name, handler)
 	end
-	-- The command socket owns reconnection, so the pulse socket is re-claimed on
-	-- every (re)connect rather than growing its own retry loop.
+	-- The pulse stream owns its own reconnection (a daemon restart or a lost
+	-- race with the listener must not leave it dead); the command socket still
+	-- re-claims it on every (re)connect so the two never drift apart.
 	ipc.connect(G.opts.socket_path, function()
 		pulse.connect(ipc.pulse_path())
 	end)
@@ -326,6 +331,13 @@ function G.setup(opts)
 	start_resync()
 
 	vim.api.nvim_create_autocmd("ColorScheme", { desc = "GTM: re-derive reactive theme", callback = theme.on_colorscheme })
+	-- `:set background=light|dark` can re-theme without a `ColorScheme` at all,
+	-- and it flips the polarity the daemon's token set is read against.
+	vim.api.nvim_create_autocmd("OptionSet", {
+		pattern = "background",
+		desc = "GTM: re-derive reactive theme on background flip",
+		callback = theme.on_colorscheme,
+	})
 	vim.api.nvim_create_autocmd("VimLeavePre", {
 		desc = "GTM: release daemon resources",
 		callback = function()

@@ -141,6 +141,8 @@ keeps it, the gtm TUI, and any other client in agreement.
   - Semantic groups (Error, Warning, Diff, Spell, Todo, diagnostics, gitSigns)
     keep their colorscheme colours.
   - Changing colorscheme mid-track re-picks light or dark and re-tints.
+  - A track change re-tints live. If the pulse stream drops, it reconnects on
+    its own, and the tint is re-asserted on the periodic resync.
   - A track with no cover art never tints.
   - `:Gtm theme reset` restores every group to exactly its prior value.
 

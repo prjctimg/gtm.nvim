@@ -114,6 +114,7 @@ A few things worth knowing:
 - It **keeps the tint while paused**, and only restores your theme when playback really stops — no flicker on every pause.
 - **Error, warning, diff, spell and `Todo` colours never move.** They're how you spot problems, so they stay readable no matter what the artwork is doing.
 - Swapping colorscheme mid-song re-picks light or dark and re-tints, instead of dropping the theme.
+- **Track changes re-tint live, with no restart.** If the pulse stream drops — `gtmd` restarting, say — it reconnects on its own, and the tint is re-asserted on the periodic resync, so the editor never keeps colours from a track that already ended.
 - `:Gtm theme reset` puts everything back exactly as it was.
 - A track with no cover art never tints. That is the daemon's call to make, not the plugin's.
 - Turn it off with `theme = { reactive = false }`, or set `theme = { intensity = 0 }` to keep your backgrounds untouched while the accents and syntax still follow the album.

@@ -42,13 +42,18 @@ Two Unix sockets to gtmd, both non-blocking via `vim.uv`:
 |--------|------|
 | `lua/gtm/init.lua` | Public API, `:Gtm`, keymaps, setup, statusline rendering |
 | `lua/gtm/ipc.lua` | `gtmd.sock` — newline JSON, request/response by `id`, reconnect with backoff, status snapshot |
-| `lua/gtm/pulse.lua` | `gtmd.pulse` — length-prefixed MessagePack; peeks the tag, drops telemetry, decodes the rest with `vim.mpack` |
-| `lua/gtm/theme.lua` | Applies resolved colour roles; snapshots every group and restores on stop |
+| `lua/gtm/pulse.lua` | `gtmd.pulse` — length-prefixed MessagePack; peeks the tag, drops telemetry, decodes the rest with `vim.mpack`; owns its reconnection (backoff + heartbeat watchdog) |
+| `lua/gtm/theme.lua` | Applies resolved colour roles; snapshots every group and restores on stop; re-derives after a colorscheme change |
 | `lua/gtm/health.lua` | `:checkhealth gtm` |
 
 The pulse stream is the source of truth for state changes. Position is
 extrapolated locally between events; the `get_status_lite` resync is only a
 floor under drift the plugin never heard about.
+
+The two sockets heal independently: the command socket retries forever, and the
+pulse socket redials on EOF or a silent heartbeat. A resync tick re-claims the
+pulse socket and re-asserts the tint, so a stream that dies quietly cannot leave
+the editor stuck on a previous track.
 
 ## Conventions worth keeping
 

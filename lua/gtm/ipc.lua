@@ -151,7 +151,10 @@ function I._open()
 	end)
 end
 
---- Exponential backoff, capped, and never more than one timer in flight.
+--- Exponential backoff, capped, and never more than one timer in flight. It
+--- never gives up: gtmd may come back at any time, and a plugin that stops
+--- trying is a plugin that silently stays stale for the rest of the session.
+--- `MAX_ATTEMPTS` only decides when to warn once that the wait has got long.
 function I._retry()
 	I.connected = false
 	if retry_timer or not I.path then
@@ -161,9 +164,8 @@ function I._retry()
 	retry_timer:start(delay, 0, function()
 		stop_retry()
 		attempts = attempts + 1
-		if attempts > MAX_ATTEMPTS then
-			vim.notify("[gtm] gave up reconnecting to gtmd", vim.log.levels.ERROR)
-			return
+		if attempts == MAX_ATTEMPTS then
+			vim.notify("[gtm] still reconnecting to gtmd; it may not be running", vim.log.levels.WARN)
 		end
 		delay = math.min(delay * 2, RETRY_MAX_DELAY)
 		I._open()

@@ -105,8 +105,8 @@ This is free software released under the GPL-3.0 license.
   A plugin silently starting a server process is not its call to make, so it now
   notifies instead. Start `gtmd` yourself.
 - `:Gtm disconnect`. `:checkhealth gtm` reports connection state and reconnection
-  gives up after 30 attempts, so a command to drop the socket by hand was a
-  debug hatch rather than a feature.
+  is automatic (it no longer gives up), so a command to drop the socket by hand
+  was a debug hatch rather than a feature.
 - `duration_changed` handling. It patched `status.duration`, which nothing read
   — every duration read goes through the extrapolated clock in `gtm.ipc`.
 - `radio_title_changed` handling. Internet radio therefore shows the title that
@@ -115,6 +115,26 @@ This is free software released under the GPL-3.0 license.
 
 ### Fixed
 
+- **A track change did not re-tint until Neovim restarted.** The heartbeat and
+  playback events travel on the pulse socket, and that subscriber had no
+  reconnection of its own: a stream that died silently — a `gtmd` restart, a
+  connect that lost a race with the listener — left both the tint and the
+  statusline frozen for the rest of the session while the command socket still
+  looked healthy. The subscriber now replaces a dead handle instead of keeping
+  it, redials with backoff after EOF or a failed connect, and a watchdog
+  reconnects when the heartbeat has been quiet for a minute. The command socket
+  no longer gives up after thirty attempts, and the periodic resync tick
+  re-claims the pulse socket and re-asserts the tint, so a dropped stream or a
+  silently shadowed highlight does not stay wrong.
+- **A colorscheme change re-based the tint on the previous scheme's colours.**
+  `on_colorscheme` put the tint down by writing the whole old snapshot back —
+  including over groups the new scheme had just redefined — and then recorded
+  that as the baseline, so a later `:Gtm theme reset` restored colours from the
+  scheme the user had left. It now lifts only groups whose current value is
+  still the tint it wrote, re-snapshots the scheme that actually loaded, and
+  re-applies. It runs deferred through `vim.schedule`, so its handler wins the
+  `ColorScheme` ordering, and `:set background=light|dark` is handled the same
+  way.
 - **Syntax highlighting was not being applied.** `theme.fg_role()` resolved a
   group to a syntax role with `name:gsub("^@", ""):gsub("[%w_]+$", "")`, which
   strips a single-segment name to `""` and leaves a trailing dot on a dotted

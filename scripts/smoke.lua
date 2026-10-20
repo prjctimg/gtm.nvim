@@ -23,6 +23,19 @@ local function check(name, cond, detail)
 	end
 end
 
+-- The plugin defers its colorscheme handling through `vim.schedule` so its
+-- handler runs after every other `ColorScheme` listener. Tests that assert on
+-- the result have to let that callback run first.
+local function flush()
+	local done = false
+	vim.schedule(function()
+		done = true
+	end)
+	vim.wait(1000, function()
+		return done
+	end, 5)
+end
+
 -- MessagePack helpers, hand-rolled so the test needs no encoder.
 local function be32(n)
 	return string.char(
@@ -53,13 +66,16 @@ local function bind(path)
 	return pipe
 end
 
---- Accept one connection and hand the stream to `on_connect`.
+--- Accept connections as they arrive and hand each stream to `on_connect`.
+--- Re-accepting matters for the reconnect test: the client must be able to
+--- redial after the daemon hangs up, exactly as it would on a real restart.
 local function serve(path, on_connect)
 	local server = bind(path)
-	uv.listen(server, 1, function()
+	uv.listen(server, 8, function()
 		local client = uv.new_pipe(false)
-		uv.accept(server, client)
-		on_connect(client)
+		if uv.accept(server, client) then
+			on_connect(client)
+		end
 	end)
 	return server
 end
@@ -281,10 +297,12 @@ if push.client then
 	-- A colorscheme swap re-picks polarity from the stored sets.
 	vim.o.background = "light"
 	theme.on_colorscheme()
+	flush()
 	local light_bg = theme.roles().bg0
 	check("light polarity picked after a colorscheme change", light_bg == 0xf6f4f1, vim.inspect(light_bg))
 	vim.o.background = "dark"
 	theme.on_colorscheme()
+	flush()
 	check("dark polarity restored", theme.roles().bg0 == 0x0d0d12)
 
 	-- gtmd batches these two into a single frame, palette first — the shape a
@@ -304,6 +322,36 @@ if push.client then
 		return theme.roles() ~= nil
 	end, 20)
 	check("a batched palette+theme frame keeps its theme", theme.roles() ~= nil, vim.inspect(theme.roles()))
+
+	-- The *track change* shape is not the connect shape: gtmd sends the palette
+	-- and the theme as two separate single-event frames. The palette is not in
+	-- WANTED, so it is dropped without decoding; the theme that follows it in a
+	-- later frame must still land. A track change used to need a Neovim restart
+	-- because the stream had quietly died, so assert the tint actually moves.
+	theme.clear()
+	local palette_frame = "\x91\x94" .. fixstr("reactive_palette")
+		.. fixstr("#224466") .. fixstr("#113355") .. fixstr("#332211")
+	push.client:write(be32(#palette_frame) .. palette_frame)
+	push.client:write(roles_frame())
+	vim.wait(1000, function()
+		return theme.roles() ~= nil
+	end, 20)
+	check("a track change in separate frames re-tints live", theme.roles() ~= nil, vim.inspect(theme.roles()))
+
+	-- A pulse stream that dies on its own has to come back without a Neovim
+	-- restart. Simulate the daemon hanging up: the client sees EOF and has to
+	-- redial by itself, while the command socket stays perfectly healthy.
+	local dropped = push.client
+	push.client = nil
+	dropped:close()
+	vim.wait(3000, function()
+		return push.client ~= nil and pulse.is_connected()
+	end, 20)
+	check(
+		"a dead pulse stream reconnects on its own",
+		push.client ~= nil and pulse.is_connected(),
+		"client=" .. tostring(push.client ~= nil) .. " connected=" .. tostring(pulse.is_connected())
+	)
 else
 	check("pulse client accepted", false)
 end
@@ -337,17 +385,44 @@ end
 theme.set_roles(role_set("#0d0d12", "#e0e0e0", "#3b6ea5"))
 check("tinted before the colorscheme swap", vim.api.nvim_get_hl(0, { name = "Normal" }).bg ~= pristine.bg)
 theme.on_colorscheme()
+flush()
 check("tint survives a colorscheme swap", theme.roles() ~= nil)
 theme.restore()
 local now = vim.api.nvim_get_hl(0, { name = "Normal" })
 check("restore still returns the pristine colour", vim.deep_equal(pristine, now))
 check("restore keeps the role sets so a re-pick is possible", theme.version() == 1)
 
+-- A real colorscheme change redefines groups while the tint is up. The tint
+-- must be lifted only where it is still ours, so the new scheme's colour
+-- becomes the baseline — restoring the previous scheme over the new one would
+-- be worse than leaving the tint, and snapshotting our own tint would make a
+-- later restore a no-op.
+local fresh_bg = 0x223344
+theme.set_roles(role_set("#0d0d12", "#e0e0e0", "#3b6ea5"))
+vim.api.nvim_set_hl(0, "Normal", { fg = 0xdddddd, bg = fresh_bg })
+theme.on_colorscheme()
+flush()
+check(
+	"a redefined group is re-tinted, not left as the scheme's own",
+	vim.api.nvim_get_hl(0, { name = "Normal" }).bg ~= fresh_bg,
+	vim.inspect(vim.api.nvim_get_hl(0, { name = "Normal" }))
+)
+theme.restore()
+check(
+	"restore takes the new colorscheme's colour as the baseline",
+	vim.api.nvim_get_hl(0, { name = "Normal" }).bg == fresh_bg,
+	vim.inspect(vim.api.nvim_get_hl(0, { name = "Normal" }))
+)
+-- Re-establish the original state for the tests that follow.
+vim.api.nvim_set_hl(0, "Normal", pristine)
+theme.snapshot()
+
 -- A reset must forget them, or the next colorscheme change resurrects a tint
 -- the user just turned off.
 theme.set_roles(role_set("#0d0d12", "#e0e0e0", "#3b6ea5"))
 vim.cmd("Gtm theme reset")
 theme.on_colorscheme()
+flush()
 check("a reset is not resurrected by a colorscheme change", theme.roles() == nil, vim.inspect(theme.roles()))
 
 print("\n[commands]")

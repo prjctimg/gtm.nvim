@@ -27,6 +27,10 @@ local byte, sub = string.byte, string.sub
 
 local sock, buf, heartbeat, handlers, connected = nil, "", 0, {}, false
 
+-- Reconnection is owned here, not by the command socket: a pulse stream that
+-- dies on its own has to come back without a Neovim restart.
+local path, retry_timer, delay, watchdog, connected_at = nil, nil, 500, nil, 0
+
 -- TrackInfo fields we read, in Rust declaration order. The tuple encoding drops
 -- the names, so positions have to be re-keyed by hand; the remaining fields the
 -- daemon sends past these are simply not read.
@@ -62,6 +66,11 @@ local WANTED = {
 -- A frame this large is corrupt; drop the buffer and wait for the next read.
 -- Far beyond any real event, and a cheap guard against desynchronising on it.
 local MAX_FRAME = 16 * 1024 * 1024
+
+-- gtmd beats every 15s. Anything past a minute means the stream is wedged even
+-- though the socket still looks open — the same threshold `gtm.health` reports.
+local HEARTBEAT_STALE = 60
+local RETRY_MAX_DELAY = 10000
 
 --- Position just past an array header, or nil if there is not one there.
 local function past_array_header(s, pos)
@@ -105,25 +114,95 @@ function P.on(name, handler)
 	table.insert(handlers[name], handler)
 end
 
---- Open the pulse socket. Safe to call repeatedly: a live socket is kept, and
---- reconnection is the command socket's job (see `ipc._on_connect`).
-function P.connect(path)
+local function stop_timer(t)
+	if t then
+		t:stop()
+		t:close()
+	end
+end
+
+--- Drop the handle without forgetting where to reconnect.
+local function teardown()
 	if sock then
+		sock:read_stop()
+		if not sock:is_closing() then
+			sock:close()
+		end
+		sock = nil
+	end
+	connected, buf = false, ""
+	stop_timer(watchdog)
+	watchdog = nil
+end
+
+--- Redial after a failure: exponential backoff, capped, one timer in flight.
+local function retry_later()
+	if retry_timer or not path then
 		return
 	end
+	retry_timer = uv.new_timer()
+	retry_timer:start(delay, 0, function()
+		stop_timer(retry_timer)
+		retry_timer = nil
+		delay = math.min(delay * 2, RETRY_MAX_DELAY)
+		P.connect(path)
+	end)
+end
+
+--- Watchdog for a wedged stream. The command socket cannot see a pulse socket
+--- that stopped delivering, so without this the editor sits on stale state until
+--- Neovim restarts. `connected_at` is the floor until the first real beat, which
+--- keeps a fresh connection from being mistaken for a silent one.
+local function start_watchdog()
+	stop_timer(watchdog)
+	watchdog = uv.new_timer()
+	watchdog:start(HEARTBEAT_STALE * 1000, HEARTBEAT_STALE * 1000, function()
+		if sock and (uv.hrtime() - math.max(heartbeat, connected_at)) / 1e9 > HEARTBEAT_STALE then
+			vim.schedule(function()
+				if sock then
+					teardown()
+					retry_later()
+				end
+			end)
+		end
+	end)
+end
+
+--- Open the pulse socket. Safe to call repeatedly: a live socket is kept and a
+--- dead one is replaced. Reconnection is claimed here rather than left to the
+--- command socket, so a stream that dies on its own — a daemon restart, a
+--- connect that lost a race with the listener — heals without a restart.
+function P.connect(newpath)
+	path = newpath or path
+	if sock then
+		if connected then
+			return
+		end
+		teardown()
+	end
+	stop_timer(retry_timer)
+	retry_timer = nil
 	local pipe = uv.new_pipe(false)
 	sock = pipe
 	pipe:connect(path, function(err)
 		if err or sock ~= pipe then
-			pipe:close()
-			sock = nil
+			if not pipe:is_closing() then
+				pipe:close()
+			end
+			if sock == pipe then
+				sock = nil
+				retry_later()
+			end
 			return
 		end
-		connected, buf = true, ""
+		connected, buf, connected_at = true, "", uv.hrtime()
+		delay = 500
 		pipe:read_start(function(rerr, data)
 			if rerr or not data then
-				connected = false
-				P.close()
+				if sock == pipe then
+					teardown()
+					retry_later()
+				end
 				return
 			end
 			buf = buf .. data
@@ -140,16 +219,17 @@ function P.connect(path)
 				P._frame(payload)
 			end
 		end)
+		start_watchdog()
 	end)
 end
 
+--- Tear the stream down for good: no watchdog, no retry. Used by `:Gtm`
+--- teardown and `VimLeavePre`; the reconnect path calls `P.connect` instead.
 function P.close()
-	if sock then
-		sock:read_stop()
-		sock:close()
-		sock = nil
-	end
-	connected, buf = false, ""
+	stop_timer(retry_timer)
+	retry_timer = nil
+	teardown()
+	path = nil
 end
 
 function P.is_connected()
