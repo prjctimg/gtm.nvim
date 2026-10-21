@@ -12,7 +12,18 @@ This is free software released under the GPL-3.0 license.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-21
+
 ### Added
+
+- **Every message now carries the radio emoji.** A gtm notification used to
+  look like any other line in a busy message list: some of them said `[gtm]`,
+  two of them said `Gtm:`, and the one that mattered most — the daemon not
+  running — was the only one with a marker at all. Every message the plugin
+  shows now starts with the same marker, `[gtm] 📻️ `, so it is recognisable
+  at a glance and greppable in a log. The marker is hardcoded on purpose: it
+  is a constant, not a setting, and it is not the source icon the statusline
+  uses for the playback source.
 
 - Reactive themes can now be **resolved by the daemon**. A gtmd new enough to
   send them broadcasts a `reactive_theme` pulse event: a complete role→colour
@@ -30,7 +41,7 @@ This is free software released under the GPL-3.0 license.
   [gtm repo](https://github.com/prjctimg/gtm). There is no local role
   derivation: against a gtmd that predates role sets the editor stays untinted.
 
-- `theme.intensity` (default `0.25`) tunes the background wash: each background
+- `theme.intensity` (default `0.34`) tunes the background wash: each background
   steps that fraction of the way toward the album accent, so the tint lands on
   *your* colorscheme's surfaces instead of a fixed dark grey. `0` leaves
   backgrounds alone while accents and syntax still follow the album.
@@ -39,12 +50,20 @@ This is free software released under the GPL-3.0 license.
   heartbeat freshness, status snapshot staleness, and whether a palette is
   actually flowing — the usual answers to "why is nothing happening".
 - `LICENSE`, `CONTRIBUTING.md` and `CODE_OF_CONDUCT.md`, matching GTM's.
-- `:Gtm disconnect` and `require("gtm").cycle_repeat()`, `set_volume()`,
-  `statusline()` and `lualine_component()` as Lua API.
-- `scripts/checkrefs.lua`, which resolves every cross-module call in `init.lua`
-  and `health.lua` against the modules as loaded. A renamed helper that one
-  caller missed now fails at push rather than at a user's keyboard.
+- Lua API for playback and the statusline: `cycle_repeat()`, `set_volume()`,
+  `statusline()` and `lualine_component()`.
+- `scripts/checkrefs.lua`, which loads `gtm` and resolves every `ipc.`, `pulse.`
+  and `theme.` call against the internal tables as they actually load. A renamed
+  helper that one caller missed now fails at push rather than at a user's
+  keyboard.
 - `:Gtm repeat` with no argument cycles the repeat mode.
+
+- Native `vim.ui.select` pickers over the daemon's own IPC: the current queue
+  (play, remove, clear), Spotify track search and synced playlists, Radio
+  Browser top stations plus search/tag/country drill-downs, local library
+  search, playlists and favourites. Selecting a row plays it. The plugin draws
+  no window and renders no cover art; the user's selector supplies search, and
+  the stock numbered list still works without one.
 
 ### Changed
 
@@ -52,10 +71,11 @@ This is free software released under the GPL-3.0 license.
   per-item table. The default now renders only the source marker and the state
   icon; artist, title, album, progress, time, volume, repeat and shuffle are
   opt-in, so nothing is squeezed into the statusline without asking. Items with
-  no data are skipped, which makes the empty state a bare `⏹`. A 0.1.x
-  `statusline_format` is still accepted and mapped onto the new table.
-- **Breaking.** No keymaps are set by default. The six previous defaults are
-  commented out in `plugin_spec.lua` and listed as suggestions in the README.
+  no data are skipped, which makes the empty state a bare `⏹`.
+- **Breaking.** No keymaps are set by default. The previous defaults are listed
+  as suggestions in the README.
+- `theme.intensity` now defaults to `0.34` (was `0.25`), giving the background
+  wash a little more of the album.
 - Reactive theming now defaults to on. `:Gtm theme reset` still turns it off.
 - `statusline.source` renders a playback-source marker, and `statusline.icons`
   makes the marker set configurable. Defaults are Nerd Font codepoints from
@@ -67,10 +87,21 @@ This is free software released under the GPL-3.0 license.
   in the gtm repo.
 - Bare `:Gtm repeat` cycles off → one → all instead of forcing `all`. An
   explicit mode still sets it directly.
+- The plugin is now a single module. IPC, pulse decoding, theming, the pickers
+  and the health checks all live in `lua/gtm/init.lua`, exposed through one `I`
+  table; `lua/gtm/health.lua` is only a `:checkhealth` discovery shim. Behaviour
+  is unchanged.
+- The internals were consolidated while the plugin was in there: the
+  notification marker, the timer teardown, the empty-string guard and the
+  timestamp format are one helper each now instead of three or four copies.
+  The public API, the command names, the option names and the statusline
+  format are unchanged.
+- The Spotify picker shows a duration as `03:05` instead of `3:05`, so it
+  lines up with the timestamp the statusline renders.
 
 ### Removed
 
-- **Breaking.** The local palette derivation in `theme.lua` (79 lines of
+- **Breaking.** The local palette derivation in the theme section (79 lines of
   `hsv_to_rgb`/`rgb_to_hsv`/`mix`/`adjust`), along with the `reactive_palette`
   subscription that fed it. gtmd owns the colours outright: a client maps roles
   onto groups and computes nothing but the background wash, which is what keeps
@@ -82,22 +113,28 @@ This is free software released under the GPL-3.0 license.
   daemon.
 - `theme.source()`, `theme.roles()`'s `"local"` mode, and the `"derived
   locally"` branch in `:checkhealth gtm`.
+- **Breaking.** The 0.1.x `statusline_format = "compact" | "detailed"` fallback.
+  The per-item table has been the only statusline format since 0.2.0; old
+  configs now fall back to the defaults instead of being remapped.
+- The undocumented `theme status` completion alias. `:Gtm theme` prints the
+  palette and `:Gtm theme reset` clears it.
 
 
-- **Breaking.** The feature set is reduced to playback control, statusline
-  integration and reactive theming. Everything else reimplemented the `gtm` TUI
-  and has been removed rather than maintained:
+- **Breaking.** The custom UI was removed rather than maintained: the floating
+  window, cover art rendering, YouTube search/download, the equalizer and the
+  old library browser. The plugin keeps playback, statusline integration,
+  reactive theming, and native `vim.ui.select` pickers over the queue and
+  library. Anything that needs a custom interface — full editing, downloads,
+  cover rendering — stays in the `gtm` TUI.
 
   | Removed | Replacement |
   |---------|-------------|
   | Floating window (`:Gtm float`, `<Leader>gf`) | The `gtm` TUI |
   | Cover art rendering (`3rd/image.nvim`) | The TUI; the daemon still extracts the palette for theming |
-  | Library browser (`:Gtm library`, `:Gtm playlists`, `:Gtm scan`) | The TUI |
+  | Custom library browser (`:Gtm library`, `:Gtm scan`) | Native pickers over `search`, `playlists` and `favourites`; full editing stays in the TUI |
   | YouTube search / download (`:Gtm yt`) | The TUI |
   | Equalizer control (`:Gtm eq`) | The TUI |
-  | Favourites, queue and playlist commands | The TUI |
-
-  The plugin is ~940 lines of code, down from ~1330.
+  | Queue, favourite and playlist *editing* | The pickers play and do basic queue edits; the TUI remains the editor |
 
 - `opts.float` (width, height, border, cover_art) and `opts.keymaps.float`.
 - `opts.theme.scope` — with no float left, the tint is always global.
@@ -108,13 +145,24 @@ This is free software released under the GPL-3.0 license.
   is automatic (it no longer gives up), so a command to drop the socket by hand
   was a debug hatch rather than a feature.
 - `duration_changed` handling. It patched `status.duration`, which nothing read
-  — every duration read goes through the extrapolated clock in `gtm.ipc`.
+  — every duration read goes through the extrapolated clock in the IPC section.
 - `radio_title_changed` handling. Internet radio therefore shows the title that
   arrived with `playback_started` and does not update to the stream's real
   title.
 
 ### Fixed
 
+- **A `false` flag from the daemon arrived as `nil`.** The pulse decoder turned
+  MessagePack nulls back into nil with `x ~= vim.NIL and x or nil`, and that
+  idiom swallows a `false` as well: a shuffle turned off was indistinguishable
+  from a shuffle the daemon never reported, and `:checkhealth gtm` printed
+  `shuffle nil` instead of `shuffle false`. Nulls are now dropped on their own,
+  so a false flag stays false.
+- **An unknown repeat mode showed the repeat marker.** The mode arrived
+  PascalCase and was lowercased with `(ev.mode or ""):lower()`, so a mode the
+  daemon did not name became the empty string — and the statusline reads
+  anything that is not `off` as "repeating". The mode is now left unset when
+  the daemon sends none.
 - **A track change did not re-tint until Neovim restarted.** The heartbeat and
   playback events travel on the pulse socket, and that subscriber had no
   reconnection of its own: a stream that died silently — a `gtmd` restart, a
@@ -150,7 +198,7 @@ This is free software released under the GPL-3.0 license.
   Applying it to `Normal` replaced the editor's own background with something
   darker and barely tinted, which read as "too darkened" and stopped feeling
   reactive. Every background is now a wash of the daemon's `accent` over the
-  colour the group already had (`theme.intensity`, default `0.25`), so the
+  colour the group already had (`theme.intensity`, default `0.34`), so the
   editor keeps its theme's elevation and gains the album's hue.
 - **Reactive theming stopped applying.** gtmd batches `reactive_palette` and
   `reactive_theme` into one pulse frame, palette first. `pulse._frame` peeked

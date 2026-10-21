@@ -18,6 +18,10 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The notes are generated from the commits between the previous tag
+          # and this one, so the history and the tags have to be there.
+          fetch-depth: 0
 
       - name: Derive version
         id: version
@@ -30,6 +34,15 @@ jobs:
             echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Generate release notes
+        run: |
+          tag="${{ steps.version.outputs.tag }}"
+          version="${{ steps.version.outputs.version }}"
+          prev_tag="$(git tag --sort=-v:refname | grep -E '^v[0-9]' | grep -v "^$tag$" | head -1)"
+          [[ -n "$prev_tag" ]] || prev_tag="$(git rev-list --max-parents=0 HEAD)"
+          bash scripts/build/release-notes.sh "$prev_tag" "${{ github.sha }}" "$version" release-notes.md
+          cat release-notes.md
+
       - name: Create tarball
         run: |
           tar -czf "gtm-nvim-${{ steps.version.outputs.version }}.tar.gz" \
@@ -40,5 +53,5 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
+          body_path: release-notes.md
           files: gtm-nvim-${{ steps.version.outputs.version }}.tar.gz
-          generate_release_notes: true

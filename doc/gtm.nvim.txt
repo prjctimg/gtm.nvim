@@ -8,17 +8,19 @@ CONTENTS					*gtm.nvim-contents*
 
   1. Setup ..................... |gtm.nvim-setup|
   2. Statusline ................ |gtm.nvim-statusline|
-  3. Commands .................. |gtm.nvim-commands|
-  4. Reactive theming .......... |gtm.nvim-theme|
-  5. Lua API ................... |gtm.nvim-api|
-  6. Configuration ............. |gtm.nvim-config|
-  7. Health .................... |gtm.nvim-health|
+  3. Browsing .................. |gtm.nvim-browsing|
+  4. Commands .................. |gtm.nvim-commands|
+  5. Reactive theming .......... |gtm.nvim-theme|
+  6. Lua API ................... |gtm.nvim-api|
+  7. Configuration ............. |gtm.nvim-config|
+  8. Health .................... |gtm.nvim-health|
 
 ==============================================================================
 1. SETUP						*gtm.nvim-setup*
 
-gtm.nvim is three things: playback control, a statusline, and reactive theming
-driven by the album art gtmd already extracted. It opens no windows of its own.
+gtm.nvim is four things: playback control, a statusline, native pickers over the
+queue and library, and reactive theming driven by the album art gtmd already
+extracted. It opens no windows of its own; every picker is `vim.ui.select`.
 
 Requires Neovim 0.11+ and a running `gtmd` (https://github.com/prjctimg/gtm).
 
@@ -41,6 +43,10 @@ No keymaps are set by default. Bind the ones you want: >
       volume_up = "<leader>g>",
       volume_down = "<leader>g<",
       stop = "<leader>gS",
+      queue = "<leader>gq",
+      spotify = "<leader>gs",
+      radio = "<leader>gr",
+      search = "<leader>g/",
     },
   })
 <
@@ -102,7 +108,45 @@ socket.
 PLAYBACK_SOURCE.md in the gtm repo.
 
 ==============================================================================
-3. COMMANDS					*gtm.nvim-commands*
+3. BROWSING					*gtm.nvim-browsing*
+
+Every picker is a `vim.ui.select` menu. The plugin draws no window and keeps no
+list: your selector supplies the UI and its search. The stock fallback is a
+numbered inputlist, so it works but is not searchable. Selecting a track plays
+it; there is nothing to open or close.
+
+Queue: ~
+  :Gtm queue             Browse the queue; selecting a row plays it.
+  :Gtm queue remove      Remove the selected row.
+  :Gtm queue clear       Clear the queue after a confirmation.
+
+`play` handles local paths, `spotify:` URIs and `radio://` streams alike, so a
+queue row plays whichever kind it is. Queue edits are explicit subcommands, so
+selecting a row never changes the queue.
+
+Spotify: ~
+  :Gtm spotify {query}   Search Spotify; only real tracks are listed.
+  :Gtm spotify           Prompt for the query first.
+  :Gtm spotify-playlists Synced playlists -> tracks.
+
+Radio: ~
+  :Gtm radio             Top Radio Browser stations.
+  :Gtm radio {query}     Search Radio Browser stations.
+  :Gtm radio tags        Tag -> stations.
+  :Gtm radio countries   Country -> stations.
+
+Local library: ~
+  :Gtm search [query]    Search the library index.
+  :Gtm playlists         Playlists -> tracks.
+  :Gtm favourites        Favourites.
+
+Cover art is not rendered in a menu. A Spotify result passes its image URL to
+the daemon, so the queued row still gets art. The Lua API mirrors each picker:
+`queue()`, `spotify()`, `spotify_playlists()`, `radio()`, `search()`,
+`playlists()` and `favourites()`.
+
+==============================================================================
+4. COMMANDS					*gtm.nvim-commands*
 
 Playback:~
   :Gtm play              Toggle play/pause.
@@ -120,12 +164,25 @@ Playback:~
 Status:~
   :Gtm status            Notify what is playing right now.
 
+Every message the plugin shows carries the same marker, `[gtm] 📻️ `, so a gtm
+notification is recognisable in a busy message list. It is a constant: there is
+no option for it.
+
+Browsing:~
+  :Gtm queue [action]    Browse the queue; action is remove or clear.
+  :Gtm spotify [query]   Search Spotify; only tracks are listed.
+  :Gtm spotify-playlists Browse synced Spotify playlists.
+  :Gtm radio [arg]       Top stations, a search, tags or countries.
+  :Gtm search [query]    Search the local library.
+  :Gtm playlists         Browse local playlists.
+  :Gtm favourites        Browse favourites.
+
 Reactive theming: >
   :Gtm theme             Print the active palette as hex values.
   :Gtm theme reset       Clear the tint and restore the previous colors.
 <
 ==============================================================================
-4. REACTIVE THEMING					*gtm.nvim-theme*
+5. REACTIVE THEMING					*gtm.nvim-theme*
 
 On by default. The editor takes on the colours of the album currently playing.
 gtmd extracts the palette from the cover art and broadcasts a resolved role set;
@@ -133,7 +190,7 @@ this plugin never decodes an image. It maps roles onto highlight groups, which
 keeps it, the gtm TUI, and any other client in agreement.
 
   - Backgrounds are your colorscheme's own colours washed toward the album accent
-    by `theme.intensity` (default 0.25), so the editor stays your theme rather
+    by `theme.intensity` (default 0.34), so the editor stays your theme rather
     than being replaced by a fixed dark surface. Set it to 0 to leave
     backgrounds alone while accents and syntax still follow the album.
   - The tint is kept while playback is paused and dropped only when playback
@@ -154,7 +211,7 @@ editor stays untinted; `:checkhealth gtm` reports that rather than leaving you
 to wonder.
 
 ==============================================================================
-5. LUA API						*gtm.nvim-api*
+6. LUA API						*gtm.nvim-api*
 
 Playback~
   require("gtm").play_pause()      Toggle play/pause.
@@ -172,11 +229,21 @@ Statusline~
   require("gtm").statusline()        Render the enabled items.
   require("gtm").lualine_component()  lualine component table.
 
+Browsing~
+  require("gtm").queue(action)        Browse the queue; action is "remove" or
+                                      "clear" (optional).
+  require("gtm").spotify(query)       Search Spotify; prompts when query is nil.
+  require("gtm").spotify_playlists()  Browse synced Spotify playlists.
+  require("gtm").radio(arg)           Top stations, a query, "tags" or "countries".
+  require("gtm").search(query)        Search the local library; prompts when nil.
+  require("gtm").playlists()          Browse local playlists.
+  require("gtm").favourites()         Browse favourites.
+
 Note: `repeat` is a Lua keyword, so the public entry point is
 `cycle_repeat()`, not `repeat()`.
 
 ==============================================================================
-6. CONFIGURATION					*gtm.nvim-config*
+7. CONFIGURATION					*gtm.nvim-config*
 
 Defaults: >
   {
@@ -186,7 +253,7 @@ Defaults: >
       artist = false, title = false, album = false, progress = false,
       time = false, volume = false, repeat = false, shuffle = false,
     },
-    theme = { reactive = true, intensity = 0.25, extra_groups = {} },
+    theme = { reactive = true, intensity = 0.34, extra_groups = {} },
     keymaps = {},
   }
 <
@@ -195,12 +262,11 @@ own: `$XDG_RUNTIME_DIR/gtm/gtmd.sock`, `/tmp/gtm-$USER/gtm/gtmd.sock`,
 `$TMPDIR/gtm/gtmd.sock`, then `~/.gtm/gtm/gtmd.sock`. The plugin does not start
 the daemon for you.
 
-A 0.1.x `statusline_format = "compact" | "detailed"` is still accepted and
-mapped onto the item table: compact turns every opt-in item off, detailed turns
-them all on.
+A `vim.ui.select` provider (fzf-lua, Telescope, snacks) is optional: without one
+the pickers fall back to the stock numbered list.
 
 ==============================================================================
-7. HEALTH						*gtm.nvim-health*
+8. HEALTH						*gtm.nvim-health*
 
 >
   :checkhealth gtm

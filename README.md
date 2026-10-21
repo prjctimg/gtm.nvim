@@ -6,9 +6,9 @@
 
 Your music, inside Neovim.
 
-`gtm.nvim` is the small piece of [GTM](https://github.com/prjctimg/gtm) that belongs in your editor: transport controls, a statusline, and reactive theming that tints your whole editor with the colours of whatever is playing. Under a thousand lines, no dependencies, no windows.
+`gtm.nvim` is the small piece of [GTM](https://github.com/prjctimg/gtm) that belongs in your editor: transport controls, a statusline, native pickers over the queue and library, and reactive theming that tints your whole editor with the colours of whatever is playing. Small, dependency-free, and no custom windows.
 
-Anything with an interface — browsing, queues, search, downloads — lives in `gtm`'s own TUI. This plugin does not reimplement it.
+Browsing is `vim.ui.select` over the daemon's own IPC, so your existing selector — fzf-lua, Telescope, snacks, or the stock list — supplies the UI and its search. Cover art, downloads and full library editing stay in `gtm`'s own TUI.
 
 ## Quick start
 
@@ -33,6 +33,10 @@ There are **no default keymaps**. Pick the ones you want:
       volume_up = "<leader>g>",
       volume_down = "<leader>g<",
       stop = "<leader>gS",
+      queue = "<leader>gq",
+      spotify = "<leader>gs",
+      radio = "<leader>gr",
+      search = "<leader>g/",
     },
   },
 }
@@ -102,6 +106,32 @@ vim.o.statusline = "%{%v:lua.require'gtm'.statusline()%}"
 
 The component hides itself while the daemon is unreachable. The clock advances locally between daemon events, so the progress bar does not stutter waiting on the socket.
 
+## Browsing
+
+Every picker is a `vim.ui.select` menu. The plugin draws no window and keeps no list of its own: your selector supplies the UI and its search — fzf-lua, Telescope, snacks, or the stock number list. Selecting a track plays it; there is nothing to open or close.
+
+| Command | What it browses |
+|---------|-----------------|
+| `:Gtm queue` | The current queue; selecting a row plays it |
+| `:Gtm queue remove` | The queue, removing the selected row |
+| `:Gtm queue clear` | Clears the queue after a confirmation |
+| `:Gtm spotify {query}` | Spotify web search; only real tracks are listed |
+| `:Gtm spotify` | Prompts for the query first |
+| `:Gtm spotify-playlists` | Synced Spotify playlists → tracks |
+| `:Gtm radio` | Top Radio Browser stations |
+| `:Gtm radio {query}` | Radio Browser station search |
+| `:Gtm radio tags` | Tag → stations |
+| `:Gtm radio countries` | Country → stations |
+| `:Gtm search [query]` | The local library index |
+| `:Gtm playlists` | Local playlists → tracks |
+| `:Gtm favourites` | Favourites |
+
+Queue playback handles local paths, `spotify:` URIs and `radio://` streams alike. Queue edits are separate subcommands, so selecting a row only plays it.
+
+The stock `vim.ui.select` fallback is a numbered `inputlist`: it works, but search needs a selector plugin. Cover art is not rendered in a menu; a Spotify result carries its image URL to the daemon so the queued row still gets art.
+
+The Lua API mirrors these: `queue(action)`, `spotify(query)`, `spotify_playlists()`, `radio(arg)`, `search(query)`, `playlists()` and `favourites()`. The opt-in keymap names are `queue`, `spotify`, `spotify_playlists`, `radio`, `search`, `playlists` and `favourites`.
+
 ## Reactive theming
 
 On by default. Your editor takes on the colours of the album you're listening to: every surface gets a wash of the dominant colour and the syntax highlights shift to the palette, so scrolling from one track to the next feels like the room changed with it.
@@ -110,7 +140,7 @@ On by default. Your editor takes on the colours of the album you're listening to
 
 A few things worth knowing:
 
-- **Backgrounds are your colorscheme, washed with the album.** Each background keeps its own colour and steps `theme.intensity` (default `0.25`) of the way toward the album accent, so the editor is *your* theme warmed by the record — never a fixed dark grey substituted for it.
+- **Backgrounds are your colorscheme, washed with the album.** Each background keeps its own colour and steps `theme.intensity` (default `0.34`) of the way toward the album accent, so the editor is *your* theme warmed by the record — never a fixed dark grey substituted for it.
 - It **keeps the tint while paused**, and only restores your theme when playback really stops — no flicker on every pause.
 - **Error, warning, diff, spell and `Todo` colours never move.** They're how you spot problems, so they stay readable no matter what the artwork is doing.
 - Swapping colorscheme mid-song re-picks light or dark and re-tints, instead of dropping the theme.
@@ -141,8 +171,17 @@ The plugin derives no roles. If your gtmd predates role sets, `:checkhealth gtm`
 | `:Gtm status` | What is playing right now |
 | `:Gtm theme` | Show the active palette |
 | `:Gtm theme reset` | Clear the tint |
+| `:Gtm queue [remove\|clear]` | Browse the queue; optionally remove the selected row or clear it |
+| `:Gtm spotify [query]` | Search Spotify (tracks only) |
+| `:Gtm spotify-playlists` | Browse synced Spotify playlists |
+| `:Gtm radio [query\|tags\|countries]` | Top stations, search, or drill down by tag/country |
+| `:Gtm search [query]` | Search the local library |
+| `:Gtm playlists` | Browse local playlists |
+| `:Gtm favourites` | Browse favourites |
 
 The Lua API mirrors the commands, so `require("gtm").next()` and friends work if you'd rather bind them yourself.
+
+Every message the plugin shows carries the same marker — `[gtm] 📻️ ` — so it is recognisable in a busy message list.
 
 ## How it talks to the daemon
 
@@ -163,8 +202,9 @@ Neovim ──► gtmd.sock   "what's playing?"     ──►  a JSON reply
 - Neovim **0.11+**
 - `gtmd` running ([GTM](https://github.com/prjctimg/gtm))
 - For reactive theming, gtmd needs to be able to read cover art — see the [GTM docs](https://github.com/prjctimg/gtm)
+- Optional: a `vim.ui.select` provider (fzf-lua, Telescope, snacks) for searchable pickers
 
-No plugin dependencies, and none optional.
+No required plugin dependencies. Without a selector plugin the pickers fall back to the stock numbered list.
 
 ## Health
 
