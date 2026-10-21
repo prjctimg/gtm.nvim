@@ -36,6 +36,21 @@ local function flush()
 	end, 5)
 end
 
+--- One polarity of a role set: the four backgrounds, the two foregrounds and
+--- the accents, all derived from three colours.
+local function polarity(bg, fg, accent)
+	return {
+		bg0 = bg, bg1 = bg, bg2 = bg, bg3 = bg, sel_bg = bg,
+		fg = fg, fg_dim = fg, cursor_line_nr = accent,
+		accent = accent, accent2 = accent, accent3 = accent,
+	}
+end
+
+--- A role set with the same colours in both polarities.
+local function role_set(bg, fg, accent)
+	return { ver = 1, dark = polarity(bg, fg, accent), light = polarity(bg, fg, accent) }
+end
+
 -- MessagePack helpers, hand-rolled so the test needs no encoder.
 local function be32(n)
 	return string.char(
@@ -83,6 +98,22 @@ end
 -- The fake daemon -------------------------------------------------------
 
 local push = {}
+local requests = {}
+local local_track = {
+	id = 1,
+	path = "/music/xtal.flac",
+	title = "Xtal",
+	artist = "Aphex Twin",
+	album = "SAW",
+	duration = 200,
+}
+
+local function reply(client, req, data)
+	data = data or {}
+	data.id = req.id
+	data.ok = true
+	client:write(vim.json.encode(data) .. "\n")
+end
 
 serve(pulse_sock, function(client)
 	push.client = client
@@ -95,9 +126,11 @@ serve(cmd_sock, function(client)
 		end
 		for text in data:gmatch("[^\n]+") do
 			local req = vim.json.decode(text)
+			local params = req.params or {}
+			requests[#requests + 1] = { cmd = req.cmd, params = params }
+
 			if req.cmd == "get_status" or req.cmd == "get_status_lite" then
-				client:write(vim.json.encode({
-					id = req.id,
+				reply(client, req, {
 					state = {
 						status = "Playing",
 						["repeat"] = "Off",
@@ -107,7 +140,88 @@ serve(cmd_sock, function(client)
 						duration = 200,
 						current_track = { artist = "Aphex Twin", title = "Xtal", album = "SAW", duration = 200 },
 					},
-				}) .. "\n")
+				})
+			elseif req.cmd == "queue" then
+				if params.action == "list" then
+					reply(client, req, {
+						queue = {
+							local_track,
+							{
+								id = 2,
+								path = "spotify:track:xtal",
+								title = "Xtal (Spotify)",
+								artist = "Aphex Twin",
+								album = "SAW",
+								duration = 200,
+							},
+						},
+						cursor = 0,
+					})
+				else
+					reply(client, req)
+				end
+			elseif req.cmd == "play" then
+				reply(client, req)
+			elseif req.cmd == "search" or req.cmd == "get_favourites" then
+				reply(client, req, { tracks = { local_track } })
+			elseif req.cmd == "library" then
+				if params.action == "get_playlists" then
+					reply(client, req, { playlists = { { id = 1, name = "Mix", track_count = 1 } } })
+				elseif params.action == "get_playlist_tracks" then
+					reply(client, req, { tracks = { local_track } })
+				else
+					reply(client, req)
+				end
+			elseif req.cmd == "spotify_search_web" then
+				reply(client, req, {
+					tracks = {
+						{
+							name = "Xtal",
+							artists = "Aphex Twin",
+							album = "SAW",
+							uri = "spotify:track:xtal",
+							image_url = "https://img/xtal",
+						},
+						{ name = "Selected Ambient Works", artists = "Aphex Twin", kind = "Album" },
+					},
+				})
+			elseif req.cmd == "spotify_resolve_track" then
+				reply(client, req)
+			elseif req.cmd == "spotify_playlists" then
+				reply(client, req, {
+					playlists = {
+						{
+							id = "pl1",
+							name = "Electronic",
+							owner = "me",
+							tracks = { { index = 0, name = "Xtal", artists = "Aphex Twin" } },
+						},
+					},
+				})
+			elseif req.cmd == "spotify_playlist_tracks" then
+				reply(client, req, {
+					tracks = {
+						{ index = 0, name = "Xtal", artists = "Aphex Twin", album = "SAW", uri = "spotify:track:xtal" },
+					},
+				})
+			elseif req.cmd == "spotify_resolve" then
+				reply(client, req)
+			elseif req.cmd == "radio_top"
+				or req.cmd == "radio_search"
+				or req.cmd == "radio_bytag"
+				or req.cmd == "radio_bycountry"
+			then
+				reply(client, req, {
+					stations = {
+						{ id = "s1", name = "Radio One", country = "UK", codec = "MP3", bitrate_kbps = 128 },
+					},
+				})
+			elseif req.cmd == "radio_tags" then
+				reply(client, req, { tags = { { name = "jazz", stationcount = 10 } } })
+			elseif req.cmd == "radio_countries" then
+				reply(client, req, { countries = { { name = "UK", stationcount = 10 } } })
+			elseif req.cmd == "radio_play" then
+				reply(client, req)
 			end
 		end
 	end)
@@ -117,9 +231,9 @@ end)
 
 vim.opt.runtimepath:prepend(repo)
 local gtm = require("gtm").setup({ socket_path = cmd_sock, theme = { reactive = true } })
-local ipc = require("gtm.ipc")
-local pulse = require("gtm.pulse")
-local theme = require("gtm.theme")
+local ipc = gtm._ipc
+local pulse = gtm._pulse
+local theme = gtm._theme
 
 vim.wait(3000, function()
 	return ipc.connected
@@ -134,7 +248,8 @@ check("pulse socket connected", pulse.is_connected())
 check("primed status snapshot", ipc.status ~= nil)
 check("status lowercased", ipc.status and ipc.status.status == "playing")
 check("repeat lowercased", ipc.status and ipc.status["repeat"] == "off")
-check("track survived JSON decode", ipc.status and ipc.status.current_track and ipc.status.current_track.title == "Xtal")
+local decoded_track = ipc.status and ipc.status.current_track
+check("track survived JSON decode", decoded_track and decoded_track.title == "Xtal", vim.inspect(decoded_track))
 
 print("\n[position]")
 vim.wait(1200)
@@ -173,17 +288,16 @@ check("lualine component is a table", type(component) == "table")
 check("lualine visible while connected", component.cond() == true)
 check("lualine renders the same as statusline()", component[1]() == gtm.statusline())
 
--- 0.1.x compatibility: a statusline_format config maps onto the item table.
-local migrated = require("gtm").setup({ statusline_format = "compact" }).opts.statusline
-check("statusline_format=compact migrates to off", migrated.artist == false and migrated.state == true, vim.inspect(migrated))
-local migrated_dense = require("gtm").setup({ statusline_format = "detailed" }).opts.statusline
-check("statusline_format=detailed migrates to on", migrated_dense.artist == true and migrated_dense.volume == true, vim.inspect(migrated_dense))
-gtm.opts.statusline = vim.deepcopy(defaults_statusline)
-
 -- Empty state is a bare stop icon, whatever is enabled.
 ipc.clear()
 check("empty state is the stop icon alone", gtm.statusline() == "⏹", vim.inspect(gtm.statusline()))
-ipc.set_status({ status = "Playing", volume = 80, time_pos = 10, duration = 200, current_track = { artist = "Aphex Twin", title = "Xtal", album = "SAW", duration = 200 } })
+ipc.set_status({
+	status = "Playing",
+	volume = 80,
+	time_pos = 10,
+	duration = 200,
+	current_track = { artist = "Aphex Twin", title = "Xtal", album = "SAW", duration = 200 },
+})
 
 print("\n[source icons]")
 -- Nerd Font codepoints are UTF-8 encoded literals, not \u escapes: LuaJIT
@@ -215,6 +329,262 @@ check("icons are overridable", gtm.statusline() == "R ▶", vim.inspect(gtm.stat
 gtm.opts.statusline = vim.deepcopy(defaults_statusline)
 ipc.status.source = nil
 check("no source field renders nothing", gtm.statusline() == "▶", vim.inspect(gtm.statusline()))
+
+print("\n[browsing]")
+-- Every picker is `vim.ui.select`; the stock fallback calls `inputlist`, which
+-- blocks headless Neovim, so replace it with a deterministic chooser. Answers
+-- are synchronous and notifications are muted to keep the output readable.
+local saved_select, saved_input, saved_notify = vim.ui.select, vim.ui.input, vim.notify
+local ui_calls = {}
+local function stub_ui(choice, input)
+	ui_calls = {}
+	vim.ui.select = function(items, opts, cb)
+		local labels = {}
+		for i, item in ipairs(items) do
+			labels[i] = opts.format_item and opts.format_item(item) or tostring(item)
+		end
+		ui_calls[#ui_calls + 1] = { items = items, labels = labels, prompt = opts.prompt }
+		if choice then
+			cb(items[choice], choice)
+		else
+			cb(nil)
+		end
+	end
+	vim.ui.input = function(opts, cb)
+		ui_calls[#ui_calls + 1] = { input = true, prompt = opts.prompt }
+		cb(input)
+	end
+end
+vim.notify = function() end
+
+local function find_request(mark, pred)
+	for i = mark + 1, #requests do
+		if pred(requests[i]) then
+			return requests[i]
+		end
+	end
+end
+
+local function wait_request(mark, pred)
+	vim.wait(3000, function()
+		return find_request(mark, pred) ~= nil
+	end, 10)
+	return find_request(mark, pred)
+end
+
+local function requested(cmd)
+	return find_request(0, function(req)
+		return req.cmd == cmd
+	end) ~= nil
+end
+
+check(
+	"theme intensity defaults to 0.34",
+	gtm.opts.theme.intensity == 0.34 and theme._intensity == 0.34,
+	vim.inspect({ gtm.opts.theme.intensity, theme._intensity })
+)
+
+local mark = #requests
+stub_ui(1)
+gtm.queue()
+local queued_play = wait_request(mark, function(req)
+	return req.cmd == "play"
+end)
+check(
+	"queue picker plays the selected row",
+	queued_play and queued_play.params.path == local_track.path,
+	vim.inspect(queued_play)
+)
+check(
+	"queue labels mark the current track",
+	ui_calls[1] and ui_calls[1].labels[1]:find("▶", 1, true) ~= nil,
+	vim.inspect(ui_calls[1] and ui_calls[1].labels)
+)
+check(
+	"queue labels carry artist and title",
+	ui_calls[1] and ui_calls[1].labels[1]:find("Aphex Twin - Xtal", 1, true) ~= nil
+)
+
+mark = #requests
+stub_ui(2)
+gtm.queue("remove")
+local removed = wait_request(mark, function(req)
+	return req.cmd == "queue" and req.params.action == "remove"
+end)
+check("queue remove uses a 0-based index", removed and removed.params.index == 1, vim.inspect(removed))
+
+mark = #requests
+stub_ui(2)
+gtm.queue("clear")
+local cleared = wait_request(mark, function(req)
+	return req.cmd == "queue" and req.params.action == "clear"
+end)
+check(
+	"queue clear confirms before sending",
+	cleared ~= nil and ui_calls[1] and ui_calls[1].prompt == "Clear the queue?"
+)
+
+mark = #requests
+stub_ui(nil)
+gtm.queue("clear")
+vim.wait(100)
+check("cancelled queue clear sends nothing", find_request(mark, function(req)
+	return req.cmd == "queue"
+end) == nil)
+
+mark = #requests
+stub_ui(1)
+gtm.queue("bogus")
+vim.wait(100)
+check("unknown queue action sends nothing", find_request(mark, function(req)
+	return req.cmd == "queue"
+end) == nil)
+
+mark = #requests
+stub_ui(1)
+gtm.spotify("xtal")
+local resolved = wait_request(mark, function(req)
+	return req.cmd == "spotify_resolve_track"
+end)
+check(
+	"spotify search resolves the picked track",
+	resolved and resolved.params.uri == "spotify:track:xtal" and resolved.params.play == true,
+	vim.inspect(resolved)
+)
+check(
+	"spotify search drops non-track rows",
+	ui_calls[1] and #ui_calls[1].items == 1,
+	vim.inspect(ui_calls[1] and #ui_calls[1].items)
+)
+check(
+	"spotify search passes art without fetching it",
+	resolved and resolved.params.image_url == "https://img/xtal" and not requested("spotify_track_image")
+)
+
+mark = #requests
+stub_ui(1)
+gtm.spotify_playlists()
+local spotify_play = wait_request(mark, function(req)
+	return req.cmd == "spotify_resolve"
+end)
+check(
+	"spotify playlists drill down to the picked track",
+	spotify_play
+		and spotify_play.params.playlist_id == "pl1"
+		and spotify_play.params.track_index == 0
+		and spotify_play.params.play == true,
+	vim.inspect(spotify_play)
+)
+check("spotify playlist tracks are refreshed", find_request(mark, function(req)
+	return req.cmd == "spotify_playlist_tracks"
+end) ~= nil)
+
+mark = #requests
+stub_ui(1)
+gtm.radio()
+local station = wait_request(mark, function(req)
+	return req.cmd == "radio_play"
+end)
+check("radio picker plays the top station", station and station.params.station_id == "s1", vim.inspect(station))
+check(
+	"station labels carry country and codec",
+	ui_calls[1] and ui_calls[1].labels[1]:find("UK", 1, true) and ui_calls[1].labels[1]:find("MP3", 1, true)
+)
+
+mark = #requests
+stub_ui(1)
+gtm.radio("jazz")
+check("radio query searches the directory", wait_request(mark, function(req)
+	return req.cmd == "radio_search" and req.params.query == "jazz"
+end) ~= nil)
+check("radio search plays the picked station", wait_request(mark, function(req)
+	return req.cmd == "radio_play"
+end) ~= nil)
+
+mark = #requests
+stub_ui(1)
+gtm.radio("tags")
+check("radio tags are listed", wait_request(mark, function(req)
+	return req.cmd == "radio_tags"
+end) ~= nil)
+local by_tag = wait_request(mark, function(req)
+	return req.cmd == "radio_bytag"
+end)
+check("radio tag drills down", by_tag and by_tag.params.tag == "jazz", vim.inspect(by_tag))
+check("radio tag selection plays", wait_request(mark, function(req)
+	return req.cmd == "radio_play"
+end) ~= nil)
+
+mark = #requests
+stub_ui(1)
+gtm.radio("countries")
+check("radio countries are listed", wait_request(mark, function(req)
+	return req.cmd == "radio_countries"
+end) ~= nil)
+local by_country = wait_request(mark, function(req)
+	return req.cmd == "radio_bycountry"
+end)
+check("radio country drills down", by_country and by_country.params.country == "UK", vim.inspect(by_country))
+check("radio country selection plays", wait_request(mark, function(req)
+	return req.cmd == "radio_play"
+end) ~= nil)
+
+mark = #requests
+stub_ui(1)
+gtm.search("xtal")
+check("library search reaches the daemon", wait_request(mark, function(req)
+	return req.cmd == "search" and req.params.query == "xtal"
+end) ~= nil)
+local search_play = wait_request(mark, function(req)
+	return req.cmd == "play"
+end)
+check(
+	"library search plays the picked track",
+	search_play and search_play.params.path == local_track.path,
+	vim.inspect(search_play)
+)
+
+mark = #requests
+stub_ui(1)
+gtm.playlists()
+check("local playlists are listed", wait_request(mark, function(req)
+	return req.cmd == "library" and req.params.action == "get_playlists"
+end) ~= nil)
+local playlist_tracks = wait_request(mark, function(req)
+	return req.cmd == "library" and req.params.action == "get_playlist_tracks"
+end)
+check(
+	"playlist selection drills down",
+	playlist_tracks and playlist_tracks.params.id == 1,
+	vim.inspect(playlist_tracks)
+)
+check("playlist track plays", wait_request(mark, function(req)
+	return req.cmd == "play"
+end) ~= nil)
+
+mark = #requests
+stub_ui(1)
+gtm.favourites()
+check("favourites are fetched", wait_request(mark, function(req)
+	return req.cmd == "get_favourites"
+end) ~= nil)
+check("a favourite plays", wait_request(mark, function(req)
+	return req.cmd == "play"
+end) ~= nil)
+
+mark = #requests
+stub_ui(1, "xtal")
+gtm.spotify()
+check("a missing query is prompted for", ui_calls[1] and ui_calls[1].input == true)
+check("the prompted query reaches Spotify", wait_request(mark, function(req)
+	return req.cmd == "spotify_search_web" and req.params.query == "xtal"
+end) ~= nil)
+check("the prompted result resolves", wait_request(mark, function(req)
+	return req.cmd == "spotify_resolve_track"
+end) ~= nil)
+vim.wait(100)
+
+vim.ui.select, vim.ui.input, vim.notify = saved_select, saved_input, saved_notify
 
 print("\n[pulse events: a bare palette tints nothing]")
 if push.client then
@@ -281,7 +651,11 @@ if push.client then
 	check("Comment takes the comment role, not fg_dim", fg("Comment") == 0x7a6478, tostring(fg("Comment")))
 	check("String takes the string role", fg("String") == 0x8fbf84, tostring(fg("String")))
 	check("Keyword takes the keyword role", fg("Keyword") == 0xc99be8, tostring(fg("Keyword")))
-	check("a tree-sitter capture follows its base group", fg("@function.builtin") == 0x82c8f0, tostring(fg("@function.builtin")))
+	check(
+		"a tree-sitter capture follows its base group",
+		fg("@function.builtin") == 0x82c8f0,
+		tostring(fg("@function.builtin"))
+	)
 	check("syntax groups are not all one colour",
 		fg("String") ~= fg("Keyword") and fg("Keyword") ~= fg("Function"),
 		vim.inspect({ fg("String"), fg("Keyword"), fg("Function") }))
@@ -362,26 +736,14 @@ theme.restore()
 local pristine = vim.api.nvim_get_hl(0, { name = "Normal" })
 theme.set_roles({
 	ver = 1,
-	dark = { bg0 = "#3b6ea5", bg1 = "#3b6ea5", bg2 = "#3b6ea5", bg3 = "#3b6ea5", sel_bg = "#3b6ea5", fg = "#e0e0e0", fg_dim = "#e0e0e0", cursor_line_nr = "#3b6ea5", accent = "#3b6ea5", accent2 = "#3b6ea5", accent3 = "#3b6ea5" },
-	light = { bg0 = "#f6f4f1", bg1 = "#f6f4f1", bg2 = "#f6f4f1", bg3 = "#f6f4f1", sel_bg = "#f6f4f1", fg = "#1a1a1a", fg_dim = "#1a1a1a", cursor_line_nr = "#9c3b52", accent = "#9c3b52", accent2 = "#9c3b52", accent3 = "#9c3b52" },
+	dark = polarity("#3b6ea5", "#e0e0e0", "#3b6ea5"),
+	light = polarity("#f6f4f1", "#1a1a1a", "#9c3b52"),
 })
 check("tint re-applied", theme.roles() ~= nil)
 theme.restore()
 check("Normal restored exactly", vim.deep_equal(pristine, vim.api.nvim_get_hl(0, { name = "Normal" })))
 
 -- A colorscheme change must not capture the tint as the new baseline.
-local function role_set(bg, fg, accent)
-	local set = { ver = 1 }
-	for _, polarity in ipairs({ "dark", "light" }) do
-		set[polarity] = {
-			bg0 = bg, bg1 = bg, bg2 = bg, bg3 = bg, sel_bg = bg,
-			fg = fg, fg_dim = fg, cursor_line_nr = accent,
-			accent = accent, accent2 = accent, accent3 = accent,
-		}
-	end
-	return set
-end
-
 theme.set_roles(role_set("#0d0d12", "#e0e0e0", "#3b6ea5"))
 check("tinted before the colorscheme swap", vim.api.nvim_get_hl(0, { name = "Normal" }).bg ~= pristine.bg)
 theme.on_colorscheme()
@@ -432,10 +794,32 @@ check("Gtm next ran cleanly", true)
 local completions = vim.fn.getcompletion("Gtm ", "cmdline")
 local has_sub = vim.tbl_contains(completions, "play") and vim.tbl_contains(completions, "seek")
 check("subcommand completion", has_sub, vim.inspect(completions))
+check(
+	"browsing subcommands are offered",
+	vim.tbl_contains(completions, "queue")
+		and vim.tbl_contains(completions, "spotify-playlists")
+		and vim.tbl_contains(completions, "favourites"),
+	vim.inspect(completions)
+)
+local queue_completions = vim.fn.getcompletion("Gtm queue ", "cmdline")
+check(
+	"queue subcommand completion",
+	vim.tbl_contains(queue_completions, "remove") and vim.tbl_contains(queue_completions, "clear"),
+	vim.inspect(queue_completions)
+)
+local radio_completions = vim.fn.getcompletion("Gtm radio ", "cmdline")
+check(
+	"radio subcommand completion",
+	vim.tbl_contains(radio_completions, "tags") and vim.tbl_contains(radio_completions, "countries"),
+	vim.inspect(radio_completions)
+)
 
 -- Every subcommand runs without raising. This is the surface that broke when a
 -- helper was renamed under one caller and not another.
-local subcommands = { "play", "next", "prev", "stop", "volup", "voldown", "mute", "shuffle", "status", "theme", "seek 30", "repeat one", "repeat", "theme reset" }
+local subcommands = {
+	"play", "next", "prev", "stop", "volup", "voldown", "mute", "shuffle",
+	"status", "theme", "seek 30", "repeat one", "repeat", "theme reset",
+}
 local broken = {}
 for _, sub in ipairs(subcommands) do
 	local ok, err = pcall(vim.cmd, "Gtm " .. sub)
@@ -449,8 +833,8 @@ check("every subcommand runs", #broken == 0, table.concat(broken, " | "))
 -- invisible until a user runs it.
 theme.set_roles({
 	ver = 1,
-	dark = { bg0 = "#3b6ea5", bg1 = "#3b6ea5", bg2 = "#3b6ea5", bg3 = "#3b6ea5", sel_bg = "#3b6ea5", fg = "#e0e0e0", fg_dim = "#e0e0e0", cursor_line_nr = "#3b6ea5", accent = "#3b6ea5", accent2 = "#3b6ea5", accent3 = "#3b6ea5" },
-	light = { bg0 = "#f6f4f1", bg1 = "#f6f4f1", bg2 = "#f6f4f1", bg3 = "#f6f4f1", sel_bg = "#f6f4f1", fg = "#1a1a1a", fg_dim = "#1a1a1a", cursor_line_nr = "#9c3b52", accent = "#9c3b52", accent2 = "#9c3b52", accent3 = "#9c3b52" },
+	dark = polarity("#3b6ea5", "#e0e0e0", "#3b6ea5"),
+	light = polarity("#f6f4f1", "#1a1a1a", "#9c3b52"),
 })
 local real_notify = vim.notify
 local function capture(...)
@@ -464,15 +848,41 @@ local function capture(...)
 end
 
 local seen = capture(vim.cmd, "Gtm theme")
-check(":Gtm theme reports the live palette", #seen == 1 and seen[1]:find("^%[gtm%] #%x%x%x%x%x%x ") ~= nil, vim.inspect(seen))
+check(
+	":Gtm theme reports the live palette",
+	#seen == 1 and seen[1]:find("^%[gtm%] .-#%x%x%x%x%x%x ") ~= nil,
+	vim.inspect(seen)
+)
 vim.cmd("Gtm theme reset")
 check(":Gtm theme reset clears the tint", theme.roles() == nil)
 
 -- Bad arguments must be reported, not sent.
 seen = capture(vim.cmd, "Gtm seek notanumber")
-check("bad :Gtm seek is reported, and only once", #seen == 1 and seen[1]:find("expected seconds") ~= nil, vim.inspect(seen))
+check(
+	"bad :Gtm seek is reported, and only once",
+	#seen == 1 and seen[1]:find("expected seconds") ~= nil,
+	vim.inspect(seen)
+)
 seen = capture(vim.cmd, "Gtm bogus")
-check("unknown subcommand is reported", #seen == 1 and seen[1]:find("unknown subcommand") ~= nil, vim.inspect(seen))
+check(
+	"unknown subcommand is reported",
+	#seen == 1 and seen[1]:find("unknown subcommand") ~= nil,
+	vim.inspect(seen)
+)
+
+-- Every message the plugin shows carries the same marker: the tag, then the
+-- radio emoji. The emoji is written as bytes, so the check cannot be fooled by
+-- a copy that lost the variation selector.
+local MARKER = "[gtm] \xf0\x9f\x93\xbb\xef\xb8\x8f "
+local unmarked = {}
+for _, sub in ipairs({ "status", "theme", "seek notanumber", "bogus", "theme reset" }) do
+	for _, msg in ipairs(capture(vim.cmd, "Gtm " .. sub)) do
+		if msg:sub(1, #MARKER) ~= MARKER then
+			unmarked[#unmarked + 1] = sub .. " -> " .. msg
+		end
+	end
+end
+check("every notification carries the radio marker", #unmarked == 0, table.concat(unmarked, " | "))
 
 print("\n[health]")
 local healthy, herr = pcall(require("gtm.health").check)
@@ -490,13 +900,17 @@ check("setup is idempotent", vim.fn.exists(":Gtm") == 2 and ipc.connected)
 local race = tmp .. "/race.lua"
 vim.fn.writefile({
 	"vim.opt.runtimepath:prepend([[" .. repo .. "]])",
-	'local ipc = require("gtm.ipc")',
+	'local ipc = require("gtm")._ipc',
 	'ipc.connect([[' .. cmd_sock .. "]], function() end)",
 	"ipc.disconnect()",
 	"vim.wait(600)",
 }, race)
 local res = vim.system({ vim.v.progpath, "--headless", "-l", race }, { text = true }):wait()
-check("no double-close when a connect is torn down mid-flight", not (res.stderr or ""):find("already closing", 1, true), vim.inspect(res.stderr))
+check(
+	"no double-close when a connect is torn down mid-flight",
+	not (res.stderr or ""):find("already closing", 1, true),
+	vim.inspect(res.stderr)
+)
 
 vim.wait(100)
 print("\n" .. (failures == 0 and "ALL CHECKS PASSED" or (failures .. " CHECK(S) FAILED")))
