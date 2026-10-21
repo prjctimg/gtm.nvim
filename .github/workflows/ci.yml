@@ -20,8 +20,11 @@ jobs:
 
       - name: Syntax check
         run: |
+          # `luac` is not on the runner, and Neovim is: it is the same Lua the
+          # plugin runs on, so it parses the files the way they will be loaded.
           for f in $(find lua plugin scripts -name '*.lua'); do
-            luac -p "$f" || { echo "syntax error in $f"; exit 1; }
+            nvim --headless -c "lua local f,e=loadfile('$f') if not f then print(e) vim.cmd('cq') end" -c qa \
+              || { echo "syntax error in $f"; exit 1; }
           done
 
       - name: Cross-module reference check
