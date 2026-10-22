@@ -7,7 +7,9 @@
 
 `gtm.nvim` is a (thin) client for [gtm(d)](https://github.com/prjctimg/gtm) that
 brings playback control, statusline integration and reactive theming inside
-Neovim. Small (~2kloc) and dependency free.
+Neovim.
+
+Small (~2kloc) and dependency free.
 
 ## Prerequisites
 
