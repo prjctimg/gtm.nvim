@@ -12,6 +12,8 @@ This is free software released under the GPL-3.0 license.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-22
+
 ### Fixed
 
 - **The resync tick no longer trips over Neovim's fast event context.** On every
@@ -22,7 +24,7 @@ This is free software released under the GPL-3.0 license.
   the message list, over and over. The refresh is now scheduled onto the main
   loop, and the tint is re-asserted from there.
 
-  A message raised from a fast event context — the "still reconnecting to gtmd"
+- A message raised from a fast event context — the "still reconnecting to gtmd"
   warning, an oversized response — is scheduled the same way, so it is shown
   instead of raising.
 
