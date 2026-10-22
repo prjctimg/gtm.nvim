@@ -578,13 +578,26 @@ do
 		local accent = roles.accent
 		local accent2 = roles.accent2
 		local accent3 = roles.accent3
-		local base = theme._base or 0x0d0d12
+		local bg0 = roles.bg0
+		local bg1 = roles.bg1
+		local bg2 = roles.bg2
+		local bg3 = roles.bg3
+		local base = theme._base or bg0 or bg1 or 0x0d0d12
 		local t = theme._intensity or 0.34
-		-- Blend the accent family in so the wash reads as "album colour" rather
-		-- than a faint tint of a single hue.
-		local a1 = accent and (accent2 and mix_rgb_int(accent, accent2, 0.4) or accent)
-		local a2 = accent and (accent3 and mix_rgb_int(a1, accent3, 0.25) or a1)
-		local wash_from_accent = a2 or accent
+		-- Pull the wash toward the daemon-supplied background palette for a
+		-- much more dramatic, album-driven tint.
+		local from_bg = bg1 or bg0 or bg2 or bg3
+		local a1 = accent and (accent2 and mix_rgb_int(accent, accent2, 0.35) or accent)
+		local a2 = a1 and (accent3 and mix_rgb_int(a1, accent3, 0.2) or a1)
+		local wash_tgt = from_bg
+		if wash_tgt and a2 then
+			wash_tgt = mix_rgb_int(wash_tgt, a2, 0.6)
+		elseif a2 then
+			wash_tgt = a2
+		end
+		if t < 0.42 then
+			t = math.min(0.5, t + 0.12)
+		end
 		for name, saved in pairs(theme._snap or {}) do
 			-- Linked groups resolve on their own; rewriting one would freeze the
 			-- link into a literal.
@@ -593,13 +606,13 @@ do
 				local bg = BG[name] and roles[BG[name]]
 				if bg then
 					attrs.bg, changed = bg, true
-				elseif accent then
+				elseif wash_tgt then
 					-- Wash the group's own colour, so the colorscheme's elevation
 					-- survives and only the hue is ours. Normal may have no
 					-- background yet; the captured base stands in for it.
 					local from = saved.bg or ((name == "Normal" or name == "NormalNC") and base)
 					if from then
-						attrs.bg, changed = wash(from, wash_from_accent, t), true
+						attrs.bg, changed = wash(from, wash_tgt, t), true
 					end
 				end
 				local role = fg_role(name)
@@ -616,7 +629,7 @@ do
 			end
 		end
 		for _, name in ipairs(theme._extra) do
-			local attrs = { fg = roles.fg, bg = wash_from_accent and wash(base, wash_from_accent, t) }
+			local attrs = { fg = roles.fg, bg = wash_tgt and wash(base, wash_tgt, t) }
 			vim.api.nvim_set_hl(0, name, attrs)
 			theme._applied[name] = attrs
 		end
