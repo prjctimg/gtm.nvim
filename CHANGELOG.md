@@ -12,6 +12,15 @@ This is free software released under the GPL-3.0 license.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-22
+
+### Fixed
+
+- **Background wash now uses more of the album palette.** Surfaces are washed
+  with a blend of the daemon's `accent`, `accent2` and `accent3` roles rather
+  than a single accent, so reactive theming pops more without recomputing any
+  role the daemon named.
+
 ## [0.2.1] - 2026-10-22
 
 ### Fixed
