@@ -484,6 +484,26 @@ do
 		return mix(ch(from, 16), ch(to, 16)) * 65536 + mix(ch(from, 8), ch(to, 8)) * 256 + mix(ch(from, 0), ch(to, 0))
 	end
 
+	--- Blend two 0xRRGGBB colours by factor t (0 = first, 1 = second).
+	local function mix_rgb_int(c1, c2, t)
+		if type(c1) ~= "number" or type(c2) ~= "number" then
+			return c1 or c2
+		end
+		t = t or 0.5
+		if t < 0 then
+			t = 0
+		elseif t > 1 then
+			t = 1
+		end
+		local function ch(c, shift)
+			return math.floor(c / 2 ^ shift) % 256
+		end
+		local function mix(a, b)
+			return math.floor(a + (b - a) * t + 0.5)
+		end
+		return mix(ch(c1, 16), ch(c2, 16)) * 65536 + mix(ch(c1, 8), ch(c2, 8)) * 256 + mix(ch(c1, 0), ch(c2, 0))
+	end
+
 	-- ============================================================================
 	-- Snapshot and restore
 	-- ============================================================================
@@ -556,7 +576,15 @@ do
 	local function apply(roles)
 		theme._roles, theme._applied = roles, {}
 		local accent = roles.accent
+		local accent2 = roles.accent2
+		local accent3 = roles.accent3
 		local base = theme._base or 0x0d0d12
+		local t = theme._intensity or 0.34
+		-- Blend the accent family in so the wash reads as "album colour" rather
+		-- than a faint tint of a single hue.
+		local a1 = accent and (accent2 and mix_rgb_int(accent, accent2, 0.4) or accent)
+		local a2 = accent and (accent3 and mix_rgb_int(a1, accent3, 0.25) or a1)
+		local wash_from_accent = a2 or accent
 		for name, saved in pairs(theme._snap or {}) do
 			-- Linked groups resolve on their own; rewriting one would freeze the
 			-- link into a literal.
@@ -571,7 +599,7 @@ do
 					-- background yet; the captured base stands in for it.
 					local from = saved.bg or ((name == "Normal" or name == "NormalNC") and base)
 					if from then
-						attrs.bg, changed = wash(from, accent, theme._intensity), true
+						attrs.bg, changed = wash(from, wash_from_accent, t), true
 					end
 				end
 				local role = fg_role(name)
@@ -588,7 +616,7 @@ do
 			end
 		end
 		for _, name in ipairs(theme._extra) do
-			local attrs = { fg = roles.fg, bg = accent and wash(base, accent, theme._intensity) }
+			local attrs = { fg = roles.fg, bg = wash_from_accent and wash(base, wash_from_accent, t) }
 			vim.api.nvim_set_hl(0, name, attrs)
 			theme._applied[name] = attrs
 		end
