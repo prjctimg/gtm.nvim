@@ -3,7 +3,9 @@
 [![License: GPLv3](https://img.shields.io/badge/license-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Neovim](https://img.shields.io/badge/neovim-0.11+-green.svg)](https://neovim.io)
 
-`gtm.nvim` is a thin client for [gtm(d)](https://github.com/prjctimg/gtm) that
+![](./image.png)
+
+`gtm.nvim` is a (thin) client for [gtm(d)](https://github.com/prjctimg/gtm) that
 brings playback control, statusline integration and reactive theming inside
 Neovim.
 
@@ -14,12 +16,14 @@ Small (~2kloc) and dependency free.
 - [gtm](https://gtmd.dev)
 - Nerd Font (optional, but recommended)
 
-* we only need the daemon binary (`gtmd`).
+We only need the daemon binary (`gtmd`).
 
 ## Quick start
 
 ```lua
-{ "prjctimg/gtm.nvim", opts = {} }
+{ "prjctimg/gtm.nvim", 
+    opts = {} 
+}
 ```
 
 You need `gtmd` running,just start playing via `gtm` and it will just work.
@@ -59,14 +63,13 @@ That's it.
   }
   },
 }
+```
 
 [See the gtm docs](https://gtmd.dev/nvim) for an exhaustive overview.
-```
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Bugs and feedback welcome; PRs are
-restricted for now.
+See [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## Contributors
 
@@ -78,8 +81,6 @@ restricted for now.
 
 ## License
 
-Copyright (C) 2026 - present prjctimg <prjctimg@outlook.com>
+Copyright (C) 2026, [prjctimg](https://prjctimg.me)
 
-Released under the [GPL-3.0 license](LICENSE) — same terms as GTM. In short: you
-may use, study, modify and redistribute it, and any distributed work must stay
-under the same license.
+Released under the [GPL-3.0 license](LICENSE).
