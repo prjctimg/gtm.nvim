@@ -12,6 +12,20 @@ This is free software released under the GPL-3.0 license.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The resync tick no longer trips over Neovim's fast event context.** On every
+  resync tick (30 seconds by default) the plugin re-asserts the reactive tint,
+  from a libuv timer — a fast event context, where the Neovim API cannot be
+  touched. Reading `background` there raised `E5560: nvim_get_option_value must
+  not be called in a fast event context`, and it surfaced as a broken callback in
+  the message list, over and over. The refresh is now scheduled onto the main
+  loop, and the tint is re-asserted from there.
+
+  A message raised from a fast event context — the "still reconnecting to gtmd"
+  warning, an oversized response — is scheduled the same way, so it is shown
+  instead of raising.
+
 ## [0.2.0] - 2026-10-21
 
 ### Added

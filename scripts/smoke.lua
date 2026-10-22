@@ -787,6 +787,34 @@ theme.on_colorscheme()
 flush()
 check("a reset is not resurrected by a colorscheme change", theme.roles() == nil, vim.inspect(theme.roles()))
 
+print("\n[fast event]")
+-- The resync tick calls theme.refresh() from a libuv timer: a fast event
+-- context, where the Neovim API cannot be touched (E5560). The tint must
+-- still be re-asserted from there.
+theme.set_roles(role_set("#0d0d12", "#e0e0e0", "#3b6ea5"))
+local tinted = vim.api.nvim_get_hl(0, { name = "Normal" }).bg
+vim.api.nvim_set_hl(0, "Normal", { fg = 0xdddddd, bg = 0x123456 })
+local raised
+local timer = vim.uv.new_timer()
+timer:start(10, 0, function()
+	local ok, err = pcall(theme.refresh)
+	if not ok then
+		raised = err
+	end
+	timer:stop()
+	timer:close()
+end)
+vim.wait(1000, function()
+	return raised ~= nil or vim.api.nvim_get_hl(0, { name = "Normal" }).bg == tinted
+end, 20)
+check("a refresh from a fast event context does not raise", raised == nil, tostring(raised))
+check(
+	"the tint is re-asserted from a fast event context",
+	vim.api.nvim_get_hl(0, { name = "Normal" }).bg == tinted,
+	vim.inspect(vim.api.nvim_get_hl(0, { name = "Normal" }))
+)
+theme.restore()
+
 print("\n[commands]")
 check("Gtm command registered", vim.fn.exists(":Gtm") == 2)
 vim.cmd("Gtm next")

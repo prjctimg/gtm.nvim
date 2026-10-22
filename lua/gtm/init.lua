@@ -15,8 +15,18 @@ local I = {}
 
 --- Every message the plugin shows carries the same marker: the tag, then the
 --- radio emoji, so a gtm notification is recognisable in a busy message list.
+---
+--- A fast event context cannot call `vim.notify` (`E5560`), so a message raised
+--- from one — a reconnect warning, say — is scheduled onto the main loop.
 local function notify(msg, level)
-	vim.notify("[gtm] 📻️ " .. msg, level)
+	local line = "[gtm] 📻️ " .. msg
+	if vim.in_fast_event() then
+		vim.schedule(function()
+			vim.notify(line, level)
+		end)
+	else
+		vim.notify(line, level)
+	end
 end
 
 --- Stop and close a libuv timer. Returns nil so the caller can assign it back.
@@ -691,10 +701,21 @@ do
 	--- Re-assert the current tint. A safety net for a background some other actor
 	--- overwrote without a `ColorScheme` of its own firing; the pulse stream is
 	--- still the source of truth for *what* the colours are.
+	---
+	--- Scheduled onto the main loop: the resync tick calls this from a libuv
+	--- timer, and a fast event context cannot touch the Neovim API (`E5560`) —
+	--- not `vim.o.background`, not `nvim_set_hl`. The guard is checked again
+	--- when the work runs, so a theme reset in between does not resurrect a
+	--- tint that was just dropped.
 	function theme.refresh()
-		if theme._enabled and theme._sets then
-			pick()
+		if not theme._enabled or not theme._sets then
+			return
 		end
+		vim.schedule(function()
+			if theme._enabled and theme._sets then
+				pick()
+			end
+		end)
 	end
 end
 
