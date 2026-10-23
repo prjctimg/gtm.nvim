@@ -40,7 +40,7 @@ jobs:
           version="${{ steps.version.outputs.version }}"
           prev_tag="$(git tag --sort=-v:refname | grep -E '^v[0-9]' | grep -v "^$tag$" | head -1)"
           [[ -n "$prev_tag" ]] || prev_tag="$(git rev-list --max-parents=0 HEAD)"
-          bash scripts/build/release-notes.sh "$prev_tag" "${{ github.sha }}" "$version" release-notes.md
+          bash automata/scripts/release-notes.sh "$prev_tag" "${{ github.sha }}" "$version" release-notes.md
           cat release-notes.md
 
       - name: Create tarball
